@@ -1,3 +1,4 @@
+# pyrefly: ignore [untyped-import]
 import psycopg2
 import pandas as pd
 import streamlit as st
@@ -162,3 +163,113 @@ def run_query(query):
             
         # default jika query tidak dikenal
         return pd.DataFrame()
+
+
+# ─── Fungsi: Inisialisasi Schema Database ────────────────────────────────────
+
+def init_schema():
+    """
+    Membuat tabel 'datasets' dan menambahkan kolom baru ke tabel 'reviews'
+    jika belum ada. Aman dijalankan berkali-kali (idempotent).
+    """
+    ddl_datasets = """
+    CREATE TABLE IF NOT EXISTS datasets (
+        id                SERIAL PRIMARY KEY,
+        file_name         VARCHAR(255)  NOT NULL,
+        uploaded_at       TIMESTAMP     DEFAULT NOW(),
+        detected_domain   VARCHAR(100),
+        detected_language VARCHAR(20),
+        row_count         INTEGER,
+        is_base_dataset   BOOLEAN DEFAULT FALSE
+    );
+    """
+    ddl_reviews_cols = """
+    ALTER TABLE reviews
+        ADD COLUMN IF NOT EXISTS dataset_id           INTEGER REFERENCES datasets(id) ON DELETE CASCADE,
+        ADD COLUMN IF NOT EXISTS predicted_ind        INTEGER,
+        ADD COLUMN IF NOT EXISTS predicted_sentiment  VARCHAR(20),
+        ADD COLUMN IF NOT EXISTS is_corrected         BOOLEAN DEFAULT FALSE;
+    """
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(ddl_datasets)
+        cur.execute(ddl_reviews_cols)
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"ok": True, "error": None}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# ─── Fungsi: Insert Metadata Dataset ─────────────────────────────────────────
+
+def insert_dataset(file_name: str, row_count: int,
+                   detected_language: str = "unknown",
+                   detected_domain: str = "general") -> dict:
+    """
+    Menyimpan metadata dataset baru ke tabel 'datasets'.
+    Returns: dict { "ok": bool, "dataset_id": int | None, "error": str | None }
+    """
+    sql = """
+    INSERT INTO datasets (file_name, row_count, detected_language, detected_domain)
+    VALUES (%s, %s, %s, %s)
+    RETURNING id;
+    """
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(sql, (file_name, row_count, detected_language, detected_domain))
+        dataset_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"ok": True, "dataset_id": dataset_id, "error": None}
+    except Exception as e:
+        return {"ok": False, "dataset_id": None, "error": str(e)}
+
+
+# ─── Fungsi: Bulk Insert Ulasan ───────────────────────────────────────────────
+
+def bulk_insert_reviews(df: pd.DataFrame, dataset_id: int, chunksize: int = 1000) -> dict:
+    """
+    Menyimpan ulasan hasil analisis ke tabel 'reviews' secara bulk
+    (1000 baris per batch agar tidak timeout).
+
+    DataFrame harus memiliki kolom: _review_text, _rating, _predicted_ind,
+    _predicted_label, _is_corrected.
+
+    Returns: dict { "ok": bool, "inserted": int, "error": str | None }
+    """
+    sql = """
+    INSERT INTO reviews
+        (review_text, rating, dataset_id, predicted_ind, predicted_sentiment, is_corrected)
+    VALUES (%s, %s, %s, %s, %s, %s);
+    """
+    total_inserted = 0
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        rows = df[["_review_text", "_rating", "_predicted_ind",
+                   "_predicted_label", "_is_corrected"]].values.tolist()
+
+        for i in range(0, len(rows), chunksize):
+            batch = rows[i : i + chunksize]
+            data = [
+                (r[0], float(r[1]) if r[1] is not None and str(r[1]) != "nan" else None,
+                 dataset_id,
+                 int(r[2]) if r[2] is not None else None,
+                 r[3], bool(r[4]))
+                for r in batch
+            ]
+            cur.executemany(sql, data)
+            conn.commit()
+            total_inserted += len(batch)
+
+        cur.close()
+        conn.close()
+        return {"ok": True, "inserted": total_inserted, "error": None}
+    except Exception as e:
+        return {"ok": False, "inserted": total_inserted, "error": str(e)}

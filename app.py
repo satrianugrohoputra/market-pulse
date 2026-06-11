@@ -3,6 +3,8 @@ import plotly.express as px
 import database as db
 import queries as q
 import ai_consultant as aic
+import upload_processor as up
+import ml_pipeline as mlp
 
 # 1. Konfigurasi Halaman Dashboard (Wide Mode & Tema Dasar)
 st.set_page_config(page_title="Market-Pulse Dashboard", layout="wide", page_icon="📊")
@@ -15,6 +17,47 @@ with st.sidebar:
     st.write("---")
     st.markdown("Developed by Kelompok 2")
     st.markdown("🎓 *Celerates Independent Study 2026*")
+    st.write("---")
+
+    # ==================== SIDEBAR: UPLOAD DATASET BARU ====================
+    with st.expander("📤 Upload Dataset Baru  ▶", expanded=False):
+        st.markdown("**Unggah file ulasan Anda sendiri** untuk dianalisis sentimennya secara otomatis.")
+        st.caption("Format: `.csv` atau `.xlsx` | Maks: 50 MB | Min: 100 baris")
+
+        uploaded_file = st.file_uploader(
+            label="Pilih file dataset:",
+            type=["csv", "xlsx"],
+            key="sidebar_file_uploader",
+            label_visibility="collapsed"
+        )
+
+        if uploaded_file is not None:
+            # Simpan info file ke session agar Section 8 bisa membacanya
+            if st.session_state.get("_last_uploaded_name") != uploaded_file.name:
+                st.session_state["_last_uploaded_name"] = uploaded_file.name
+                st.session_state["_upload_result"] = None  # Reset hasil lama
+
+            st.info(f"📄 File dipilih: **{uploaded_file.name}** ({uploaded_file.size / 1024:.1f} KB)")
+            st.session_state["_uploaded_file"] = uploaded_file
+
+            if st.button("🔍 Validasi & Proses", key="btn_sidebar_proses", use_container_width=False):
+                with st.spinner("Memvalidasi dan membersihkan data..."):
+                    result = up.process_upload(uploaded_file)
+                st.session_state["_upload_result"] = result
+
+            # Tampilkan status validasi ringkas di sidebar
+            result = st.session_state.get("_upload_result")
+            if result is not None:
+                if not result["ok"]:
+                    st.error(result["error"])
+                else:
+                    st.success(
+                        f"✅ **Siap dianalisis!**\n\n"
+                        f"- Baris valid: **{result['final_rows']:,}**\n"
+                        f"- Kolom Ulasan: `{result['text_col']}`\n"
+                        f"- Kolom Rating: `{result['rating_col'] or 'Tidak ditemukan'}`"
+                    )
+                    st.caption("Scroll ke bawah → lihat **Section 8** untuk hasil analisis.")
 
 # ==================== HALAMAN UTAMA: HEADER ====================
 st.title("📊 Market-Pulse: E-commerce Analytics")
@@ -63,14 +106,14 @@ with col_pop1:
         }
     )
     
-    st.plotly_chart(fig_pop, width="stretch")
+    st.plotly_chart(fig_pop, use_container_width=True)
 
 with col_pop2:
     st.subheader("🎯 Loyalitas per Departemen")
     df_loyal = db.run_query(q.QUERY_LOYALITAS_PELANGGAN)
     fig_loyal = px.pie(df_loyal, values="Total Reviews", names="Department",
                        hole=0.4, title="Distribusi Volume Ulasan")
-    st.plotly_chart(fig_loyal, width="stretch")
+    st.plotly_chart(fig_loyal, use_container_width=True)
 
 st.write("---")
 
@@ -85,7 +128,7 @@ with col1:
     fig_pasar = px.bar(df_pasar, x="Age Group", y="Total Purchase",
                        color="Department", barmode="group",
                        title="Volume Pembelian Berdasarkan Generasi Usia")
-    st.plotly_chart(fig_pasar, width="stretch")
+    st.plotly_chart(fig_pasar, use_container_width=True)
 
 with col2:
     st.subheader("⚠️ Titik Masalah: Ulasan Negatif per Kategori")
@@ -97,7 +140,7 @@ with col2:
                          labels={"Defect Rate": "Rasio Cacat (%)", "Class": "Kategori Kelas"},
                          title="Kategori dengan Komplain > 10 Ulasan (Label: Jumlah Komplain)",
                          color_continuous_scale=px.colors.sequential.OrRd)
-    st.plotly_chart(fig_keluhan, width="stretch")
+    st.plotly_chart(fig_keluhan, use_container_width=True)
 
 st.write("---")
 
@@ -129,16 +172,172 @@ LIMIT 10;
 df_dinamis = db.run_query(QUERY_DINAMIS)
 
 if not df_dinamis.empty:
-    st.dataframe(df_dinamis, width="stretch", hide_index=True)
+    st.dataframe(df_dinamis, use_container_width=True, hide_index=True)
 else:
     st.info(f"Tidak ada ulasan dengan kata kunci '{kata_kunci}' pada Rating {pilihan_rating}.")
 
 st.write("---")
 
-# ==================== BARIS 5: TABEL DETAIL EFEKTIVITAS ULASAN ====================
-st.subheader("💡 Efektivitas Ulasan Review Berdasarkan Rating")
-df_efektif = db.run_query(q.QUERY_EFEKTIVITAS_ULASAN)
-st.dataframe(df_efektif, width="stretch", hide_index=True)
+# ==================== BARIS 5: ANALISIS DATASET YANG DIUNGGAH ====================
+st.subheader("📤 Analisis Dataset Baru yang Diunggah")
+st.markdown(
+    "Setelah mengunggah dan memvalidasi file dataset di **Sidebar kiri**, "
+    "hasil analisis sentimen otomatis akan muncul di sini."
+)
+
+_upload_result = st.session_state.get("_upload_result")
+
+if _upload_result is None:
+    st.info("💡 Belum ada dataset yang diunggah. Gunakan panel **📤 Upload Dataset Baru** di sidebar kiri untuk memulai.")
+elif not _upload_result["ok"]:
+    st.error(_upload_result["error"])
+else:
+    df_uploaded = _upload_result["df"]
+    text_col = _upload_result["text_col"]
+    rating_col = _upload_result["rating_col"]
+    fname = st.session_state.get("_last_uploaded_name", "dataset")
+
+    # ── Info Ringkas File ──────────────────────────────────────────────────────
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("📄 Total Baris Valid", f"{_upload_result['final_rows']:,}")
+    with c2:
+        st.metric("📝 Kolom Ulasan", text_col)
+    with c3:
+        st.metric("⭐ Kolom Rating", rating_col or "Tidak Ada")
+
+    if _upload_result["is_sampled"]:
+        st.warning(
+            f"⚠️ Dataset asli memiliki lebih dari {up.MAX_ROWS:,} baris. "
+            f"Sistem mengambil sampel acak **{up.MAX_ROWS:,} baris** untuk analisis."
+        )
+
+    # Preview 5 baris pertama
+    with st.expander("🔎 Preview Data (5 baris pertama)", expanded=False):
+        preview_cols = [c for c in ["_review_text", "_rating"] if c in df_uploaded.columns]
+        st.dataframe(df_uploaded[preview_cols].head(), hide_index=True)
+
+    # ── Tombol Analisis Sentimen ───────────────────────────────────────────────
+    if st.button("🤖 Jalankan Analisis Sentimen", type="primary", key="btn_run_sentiment"):
+        with st.spinner("Menganalisis sentimen... Harap tunggu sebentar."):
+            df_result = mlp.predict_sentiments(df_uploaded)
+            st.session_state["_df_analyzed"] = df_result
+
+    # ── Tampilkan Hasil Analisis ───────────────────────────────────────────────
+    df_analyzed = st.session_state.get("_df_analyzed")
+    if df_analyzed is not None and "_predicted_label" in df_analyzed.columns:
+        ml_mode = df_analyzed["_ml_mode"].iloc[0]
+        ml_acc  = df_analyzed["_ml_accuracy"].iloc[0]
+        n_corrected = int(df_analyzed["_is_corrected"].sum())
+
+        # Info mode ML
+        if ml_mode == "train_on_the_fly":
+            st.success(
+                f"✅ **Mode: Train-On-The-Fly** — Model dilatih khusus dari dataset ini. "
+                f"Akurasi uji: **{ml_acc * 100:.2f}%**"
+            )
+        elif ml_mode == "fallback":
+            st.info("ℹ️ **Mode: Fallback** — Menggunakan model sentimen base yang sudah ada (tidak ada kolom rating terdeteksi).")
+        else:
+            st.warning("⚠️ Model sentimen tidak tersedia. Jalankan `python train_model.py` terlebih dahulu.")
+
+        if n_corrected > 0:
+            st.caption(f"🔧 {n_corrected:,} prediksi dikoreksi secara otomatis oleh Rule-Based (berdasarkan rating bintang).")
+
+        # Metrik hasil sentimen
+        valid = df_analyzed[df_analyzed["_predicted_label"].isin(["Positif", "Negatif"])]
+        n_pos = int((valid["_predicted_label"] == "Positif").sum())
+        n_neg = int((valid["_predicted_label"] == "Negatif").sum())
+        n_total = n_pos + n_neg
+
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            st.metric("✅ Ulasan Positif", f"{n_pos:,}",
+                      delta=f"{n_pos/n_total*100:.1f}%" if n_total else None)
+        with m2:
+            st.metric("❌ Ulasan Negatif", f"{n_neg:,}",
+                      delta=f"-{n_neg/n_total*100:.1f}%" if n_total else None)
+        with m3:
+            st.metric("📊 Total Dianalisis", f"{n_total:,}")
+
+        # Grafik distribusi sentimen
+        if n_total > 0:
+            import plotly.express as px
+            sentiment_counts = valid["_predicted_label"].value_counts().reset_index()
+            sentiment_counts.columns = ["Sentimen", "Jumlah"]
+            fig_sent = px.pie(
+                sentiment_counts,
+                names="Sentimen",
+                values="Jumlah",
+                color="Sentimen",
+                color_discrete_map={"Positif": "#22c55e", "Negatif": "#ef4444"},
+                title=f"Distribusi Sentimen — {fname}",
+                hole=0.45
+            )
+            st.plotly_chart(fig_sent, use_container_width=False)
+
+        # Tabel hasil (bisa diunduh)
+        show_cols = ["_review_text", "_rating", "_predicted_label", "_is_corrected"]
+        show_cols = [c for c in show_cols if c in df_analyzed.columns]
+        rename_map = {
+            "_review_text": "Teks Ulasan",
+            "_rating": "Rating",
+            "_predicted_label": "Sentimen Prediksi",
+            "_is_corrected": "Dikoreksi Rule-Based"
+        }
+        with st.expander("📋 Lihat Tabel Hasil Analisis", expanded=False):
+            st.dataframe(
+                df_analyzed[show_cols].rename(columns=rename_map),
+                hide_index=True,
+                use_container_width=False
+            )
+
+        # ── Opsi Ekspor/Simpan Hasil (Ekspor CSV & Simpan ke DB) ──────────────────
+        st.markdown("---")
+        st.markdown("#### 💾 Simpan / Ekspor Hasil Analisis")
+
+        dl_col, db_col = st.columns(2)
+        with dl_col:
+            st.markdown("**1. Unduh Hasil Sebagai CSV**")
+            st.caption("Unduh hasil prediksi sentimen dataset ini langsung ke komputer Anda.")
+            csv_data = df_analyzed[show_cols].rename(columns=rename_map).to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Download CSV Hasil Analisis",
+                data=csv_data,
+                file_name=f"hasil_analisis_{fname}.csv",
+                mime="text/csv",
+                key="download_csv_btn",
+                use_container_width=True
+            )
+
+        with db_col:
+            st.markdown("**2. Simpan ke Database PostgreSQL**")
+            st.caption("Simpan dataset beserta hasil analisis sentimen secara permanen ke database.")
+            if st.button("💾 Simpan ke PostgreSQL", key="btn_save_db", use_container_width=True):
+                with st.spinner("Menginisialisasi schema dan menyimpan data..."):
+                    # 1. Init schema jika belum ada
+                    schema_res = db.init_schema()
+                    if not schema_res["ok"]:
+                        st.error(f"❌ Gagal membuat schema: {schema_res['error']}")
+                    else:
+                        # 2. Insert metadata dataset
+                        ds_res = db.insert_dataset(
+                            file_name=fname,
+                            row_count=len(df_analyzed)
+                        )
+                        if not ds_res["ok"]:
+                            st.error(f"❌ Gagal menyimpan metadata dataset: {ds_res['error']}")
+                        else:
+                            # 3. Bulk insert ulasan
+                            insert_res = db.bulk_insert_reviews(df_analyzed, ds_res["dataset_id"])
+                            if insert_res["ok"]:
+                                st.success(
+                                    f"✅ **Berhasil disimpan!** "
+                                    f"**{insert_res['inserted']:,} ulasan** dari `{fname}` "
+                                    f"(Dataset ID: `{ds_res['dataset_id']}`) telah tersimpan di PostgreSQL."
+                                )
+                            else:
+                                st.error(f"❌ Gagal menyimpan ulasan: {insert_res['error']}")
 
 st.write("---")
 
@@ -199,7 +398,7 @@ if os.path.exists(model_path) and os.path.exists(vectorizer_path):
                 index=0
             )
         
-        if st.button("Analisis Sentimen Hybrid", type="primary", width="stretch"):
+        if st.button("Analisis Sentimen Hybrid", type="primary", use_container_width=True):
             if user_review.strip() != "":
                 # 1. Preprocessing & ML Prediction
                 cleaned_text = preprocess_input(user_review)
@@ -268,6 +467,25 @@ st.markdown(
     "dilengkapi **Hallucination Guard** untuk memverifikasi keakuratan jawaban."
 )
 
+# ── Pemilihan Sumber Data RAG ────────────────────────────────────────────────
+_has_uploaded = st.session_state.get("_upload_result") is not None and st.session_state["_upload_result"].get("ok")
+_uploaded_fname = st.session_state.get("_last_uploaded_name", "dataset yang diunggah")
+
+if _has_uploaded:
+    rag_data_source = st.radio(
+        "📁 **Sumber Data untuk AI Consultant:**",
+        options=[
+            f"📂 Dataset yang Diunggah: `{_uploaded_fname}`",
+            "🗄️ Dataset Bawaan (ecommercereviews)"
+        ],
+        index=0,
+        horizontal=True,
+        key="rag_data_source_radio"
+    )
+else:
+    rag_data_source = "🗄️ Dataset Bawaan (ecommercereviews)"
+    st.caption("💡 Untuk menganalisis dataset Anda sendiri, upload terlebih dahulu di panel **📤 Upload Dataset Baru** di sidebar kiri.")
+
 # ── Konfigurasi AI ──────────────────────────────────────────────────────────────
 col_ai1, col_ai2 = st.columns([2, 1])
 
@@ -296,7 +514,11 @@ with col_ai2:
         ),
         key="ai_model_select"
     )
-    selected_model_id = aic.GEMINI_MODELS[selected_model_label]
+    selected_model_id = (
+        aic.GEMINI_MODELS.get(selected_model_label, "gemini-3.1-flash-lite")
+        if selected_model_label
+        else "gemini-3.1-flash-lite"
+    )
 
     sentiment_filter = st.selectbox(
         "📊 Filter Ulasan:",
@@ -308,7 +530,7 @@ with col_ai2:
 st.caption(f"🔧 Model aktif: `{selected_model_id}` | Akan menganalisis hingga **{aic.RAG_TOP_K} ulasan** paling relevan dari dataset.")
 
 # ── Tombol Generate Insight ─────────────────────────────────────────────────────
-if st.button("✨ Generate Insight", type="primary", width="stretch", key="btn_generate_insight"):
+if st.button("✨ Generate Insight", type="primary", use_container_width=True, key="btn_generate_insight"):
     if not ai_query.strip():
         st.warning("⚠️ Silakan tulis pertanyaan bisnis Anda terlebih dahulu.")
         st.stop()
@@ -318,25 +540,33 @@ if st.button("✨ Generate Insight", type="primary", width="stretch", key="btn_g
         if not api_key:
             st.error("❌ API Key Gemini tidak ditemukan di `.streamlit/secrets.toml`. Tambahkan: `GEMINI_API_KEY = \"...key-anda...\"`")
         else:
-            # Ambil dataframe dari database (CSV fallback)
-            df_for_rag = db.get_csv_data()
+            # Tentukan sumber data dan nama dataset berdasarkan pilihan radio
+            if _has_uploaded and "Diunggah" in rag_data_source:
+                df_for_rag = st.session_state["_upload_result"]["df"]
+                dataset_name = _uploaded_fname
+            else:
+                df_for_rag = db.get_csv_data()
+                dataset_name = "Dataset Bawaan (ecommercereviews)"
 
-            with st.spinner(f"🔍 Mencari ulasan relevan via RAG... lalu memanggil {selected_model_id}..."):
+            with st.spinner(f"🔍 Mencari ulasan relevan via RAG dari '{dataset_name}'... lalu memanggil {selected_model_id}..."):
                 result = aic.run_ai_consultant(
                     df=df_for_rag,
                     query=ai_query,
                     api_key=api_key,
                     model_id=selected_model_id,
                     sentiment_filter=sentiment_filter,
+                    dataset_name=dataset_name,
                 )
 
             report = result["report"]
             retrieved_count = result["retrieved_count"]
             guard = result["guard_result"]
             grounding_score = guard["score"]
+            used_dataset = result.get("dataset_name", "")
 
             # ── Status Grounding Badge ──────────────────────────────────────────
             st.markdown("---")
+            st.caption(f"🗂️ Sumber data RAG: **{used_dataset}** | Filter: **{sentiment_filter}**")
             badge_col1, badge_col2, badge_col3 = st.columns(3)
             with badge_col1:
                 st.metric("📄 Ulasan Dianalisis (RAG)", f"{retrieved_count} ulasan")
@@ -356,3 +586,4 @@ if st.button("✨ Generate Insight", type="primary", width="stretch", key="btn_g
             # ── Tampilkan Laporan Gemini ────────────────────────────────────────
             st.markdown("### 📋 Laporan AI Business Insight")
             st.markdown(report)
+
