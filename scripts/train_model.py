@@ -52,14 +52,17 @@ def clean_text(text):
     return " ".join(words)
 
 
+import sys
+
 # ─── Fungsi Utama: Training ────────────────────────────────────────────────────
 def train_and_save():
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    csv_path = os.path.join(current_dir, "ecommercereviews_clean.csv")
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    csv_path = os.path.join(base_dir, "data", "ecommercereviews_clean.csv")
 
     # Buat file clean jika belum ada
     if not os.path.exists(csv_path):
-        import clean_csv
+        sys.path.append(base_dir)
+        from modules import clean_csv
         clean_csv.clean_csv_file()
 
     print("[INFO] Membaca dataset...")
@@ -131,8 +134,8 @@ def train_and_save():
     print(classification_report(y_test, y_pred, target_names=["Negatif", "Positif"], zero_division=0))
 
     # -- Simpan Model & Vectorizer --
-    model_path = os.path.join(current_dir, "model_sentimen.pkl")
-    vectorizer_path = os.path.join(current_dir, "vectorizer.pkl")
+    model_path = os.path.join(base_dir, "models", "model_sentimen.pkl")
+    vectorizer_path = os.path.join(base_dir, "models", "vectorizer.pkl")
 
     print(f"[INFO] Menyimpan model ke {model_path}...")
     with open(model_path, "wb") as f:

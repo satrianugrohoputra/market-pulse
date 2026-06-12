@@ -1,10 +1,10 @@
 import streamlit as st
 import plotly.express as px
-import database as db
-import queries as q
-import ai_consultant as aic
-import upload_processor as up
-import ml_pipeline as mlp
+import modules.database as db
+import modules.queries as q
+import modules.ai_consultant as aic
+import modules.upload_processor as up
+import modules.ml_pipeline as mlp
 
 # 1. Konfigurasi Halaman Dashboard (Wide Mode & Tema Dasar)
 st.set_page_config(page_title="Market-Pulse Dashboard", layout="wide", page_icon="📊")
@@ -362,10 +362,10 @@ def preprocess_input(text):
     words = [w for w in words if w not in ENGLISH_STOP_WORDS]
     return " ".join(words)
 
-# Menggunakan path relative terhadap app.py
+# Menggunakan path relative terhadap app.py (folder models)
 current_dir = os.path.dirname(__file__)
-model_path = os.path.join(current_dir, "model_sentimen.pkl")
-vectorizer_path = os.path.join(current_dir, "vectorizer.pkl")
+model_path = os.path.join(current_dir, "models", "model_sentimen.pkl")
+vectorizer_path = os.path.join(current_dir, "models", "vectorizer.pkl")
 
 if os.path.exists(model_path) and os.path.exists(vectorizer_path):
     try:

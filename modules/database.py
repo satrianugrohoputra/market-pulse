@@ -3,7 +3,7 @@ import psycopg2
 import pandas as pd
 import streamlit as st
 import os
-import clean_csv
+import modules.clean_csv as clean_csv
 
 # Globals to cache CSV data in memory
 _df_cache = None
@@ -21,13 +21,14 @@ def get_connection():
 def get_csv_data():
     global _df_cache
     if _df_cache is None:
-        csv_path = os.path.join(os.path.dirname(__file__), "ecommercereviews_clean.csv")
+        base_dir = os.path.dirname(os.path.dirname(__file__))
+        csv_path = os.path.join(base_dir, "data", "ecommercereviews_clean.csv")
         if not os.path.exists(csv_path):
             # Fallback jika belum di-clean
-            raw_path = os.path.join(os.path.dirname(__file__), "ecommercereviews.csv")
+            raw_path = os.path.join(base_dir, "data", "ecommercereviews.csv")
             if os.path.exists(raw_path):
                 # Clean on the fly
-                                clean_csv.clean_csv_file()
+                clean_csv.clean_csv_file()
             else:
                 raise FileNotFoundError(f"File dataset {csv_path} atau {raw_path} tidak ditemukan.")
         
