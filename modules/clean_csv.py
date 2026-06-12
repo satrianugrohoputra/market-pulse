@@ -1,8 +1,10 @@
 import re
+import os
 
 def clean_csv_file():
-    input_path = "ecommercereviews.csv"
-    output_path = "ecommercereviews_clean.csv"
+    base_dir = os.path.dirname(os.path.dirname(__file__))
+    input_path = os.path.join(base_dir, "data", "ecommercereviews.csv")
+    output_path = os.path.join(base_dir, "data", "ecommercereviews_clean.csv")
     
     with open(input_path, "r", encoding="utf-8") as fin:
         lines = fin.readlines()
