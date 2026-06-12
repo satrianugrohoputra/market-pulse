@@ -47,9 +47,9 @@ ALL_STOPWORDS = set(ENGLISH_STOP_WORDS) | INDONESIAN_STOPWORDS
 # ─── Konstanta ────────────────────────────────────────────────────────────────
 
 MIN_SAMPLES_PER_CLASS = 30  # Minimal sampel per kelas untuk Train-On-The-Fly
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "model_sentimen.pkl")
-VECTORIZER_PATH = os.path.join(BASE_DIR, "vectorizer.pkl")
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MODEL_PATH = os.path.join(BASE_DIR, "models", "model_sentimen.pkl")
+VECTORIZER_PATH = os.path.join(BASE_DIR, "models", "vectorizer.pkl")
 
 
 # ─── Fungsi: Pembersihan Teks ─────────────────────────────────────────────────
