@@ -80,17 +80,17 @@ def train_and_save():
     df_clean = df[df['rating'] != 3].copy()
 
     # Label sentimen biner: 4-5 = Positif (1), 1-2 = Negatif (0)
-    df_clean['sentiment'] = df_clean['rating'].apply(lambda x: 1 if x >= 4 else 0)
+    df_clean['sentiment'] = pd.Series(df_clean['rating']).apply(lambda x: 1 if x >= 4 else 0)
 
     # Bersihkan teks ulasan
     df_clean['review_text'] = df_clean['review_text'].astype(str)
-    df_clean['cleaned_text'] = df_clean['review_text'].apply(clean_text)
+    df_clean['cleaned_text'] = pd.Series(df_clean['review_text']).apply(clean_text)
 
     # Hapus baris teks kosong setelah cleaning
-    df_clean = df_clean[df_clean['cleaned_text'].str.strip() != ""]
+    df_clean = df_clean[pd.Series(df_clean['cleaned_text']).str.strip() != ""]
 
     # Laporan distribusi kelas
-    class_dist = df_clean['sentiment'].value_counts()
+    class_dist = pd.Series(df_clean['sentiment']).value_counts()
     print(f"   Distribusi kelas -> Positif: {class_dist.get(1,0):,} | Negatif: {class_dist.get(0,0):,}")
 
     X = df_clean['cleaned_text']
@@ -131,7 +131,7 @@ def train_and_save():
     acc = accuracy_score(y_test, y_pred)
     print(f"[RESULT] Akurasi model: {acc * 100:.2f}%")
     print("\nClassification Report:")
-    print(classification_report(y_test, y_pred, target_names=["Negatif", "Positif"], zero_division=0))
+    print(classification_report(y_test, y_pred, target_names=["Negatif", "Positif"], zero_division=0))  # type: ignore
 
     # -- Simpan Model & Vectorizer --
     model_path = os.path.join(base_dir, "models", "model_sentimen.pkl")

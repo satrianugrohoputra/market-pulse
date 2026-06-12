@@ -2,10 +2,12 @@
 ai_consultant.py
 ================
 Modul AI Consultant untuk Market-Pulse Dashboard.
-Mengimplementasikan tiga fitur utama:
-  1. RAG sederhana berbasis TF-IDF dari CSV dataset lokal.
-  2. Panggilan LLM Gemini dengan prompt engineering terstruktur.
-  3. Hallucination Guard berbasis cosine similarity (lokal, gratis).
+Mengimplementasikan pipeline lengkap:
+  1. Pre-flight Guardrail  : Cek lokal apakah query relevan e-commerce SEBELUM API dipanggil.
+  2. RAG (TF-IDF)          : Ambil ulasan paling relevan dari dataset sebagai konteks.
+  3. Prompt Engineering    : Bangun prompt terstruktur dengan grounding instruction ketat.
+  4. Gemini API            : Generate laporan bisnis berdasarkan konteks ulasan.
+  5. Hallucination Guard   : Verifikasi hasil laporan berakar dari data ulasan nyata.
 """
 
 import re
@@ -24,15 +26,122 @@ GEMINI_MODELS: dict[str, str] = {
     "gemini-2.5-flash (Balanced — Lebih Cerdas)": "gemini-2.5-flash",
 }
 
-# Ambang batas grounding: jika skor kesamaan rata-rata laporan < threshold ini,
-# Hallucination Guard menandai laporan sebagai "tidak sepenuhnya dari data".
 HALLUCINATION_THRESHOLD = 0.20
-
-# Jumlah ulasan yang diambil via RAG sebagai konteks Gemini
 RAG_TOP_K = 15
 
+# ─── Konstanta Guardrail ───────────────────────────────────────────────────────
 
-# ─── Fitur 2: RAG Berbasis TF-IDF ─────────────────────────────────────────────
+# Kata kunci yang WAJIB ada (jika tidak ada satu pun, query langsung ditolak)
+# Mencakup konteks: e-commerce, review, ulasan, rating, pembeli, penjual, produk, dll.
+_ECOMMERCE_KEYWORDS = {
+    # Produk & Transaksi
+    "produk", "barang", "item", "product", "goods", "item",
+    "beli", "jual", "beli", "order", "pesan", "transaksi", "purchase", "buy", "sell",
+    "harga", "price", "diskon", "promo", "voucher", "discount", "murah", "mahal",
+    "pengiriman", "kirim", "ongkir", "delivery", "shipping", "paket", "ekspedisi",
+    "toko", "seller", "penjual", "merchant", "vendor", "store", "shop",
+    "pembeli", "buyer", "customer", "pelanggan", "konsumen",
+    # Ulasan & Sentimen
+    "ulasan", "review", "rating", "bintang", "star", "feedback", "testimoni",
+    "komentar", "keluhan", "komplain", "complaint", "puas", "kecewa",
+    "bagus", "jelek", "buruk", "baik", "memuaskan", "recommend",
+    "sentimen", "sentiment", "positif", "negatif",
+    # Kategori Produk Fashion/E-commerce
+    "pakaian", "baju", "fashion", "clothing", "dress", "celana", "kemeja",
+    "ukuran", "size", "warna", "color", "kualitas", "quality", "bahan", "material",
+    # Platform & Layanan
+    "ecommerce", "marketplace", "platform", "layanan", "service", "garansi",
+    "return", "refund", "komplain", "respon", "response",
+    # Analisis Bisnis
+    "analisis", "analysis", "trend", "tren", "insight", "laporan", "report",
+    "performa", "performance", "penjualan", "sales", "revenue",
+    "bisnis", "business", "strategi", "strategy", "pasar", "market",
+}
+
+# Kata kunci yang menjadi sinyal PASTI out-of-context
+_HARD_BLOCK_KEYWORDS = {
+    # Pemrograman & Teknologi Umum
+    "python", "javascript", "java", "php", "html", "css", "coding", "program",
+    "fungsi", "function", "variabel", "variable", "loop", "array", "database",
+    "algoritma", "algorithm", "framework", "library", "debug", "error code",
+    "github", "git", "docker", "kubernetes", "api design",
+    # Ilmu Pengetahuan Umum
+    "matematika", "fisika", "kimia", "biologi", "sejarah", "geografi",
+    "physics", "chemistry", "biology", "history", "science", "mathematics",
+    # Kesehatan & Medis
+    "penyakit", "obat", "dokter", "rumah sakit", "medis", "kesehatan",
+    "disease", "medicine", "doctor", "hospital", "health",
+    # Hiburan & Sosial
+    "film", "musik", "lagu", "game", "resep", "memasak", "olahraga", "sepak bola",
+    "movie", "music", "recipe", "cooking", "football", "sports",
+    # Keuangan di luar e-commerce
+    "saham", "kripto", "bitcoin", "investasi saham", "forex", "trading",
+    "stock", "crypto", "investment", "forex",
+}
+
+
+# ─── Layer 1: Pre-flight Guardrail (Lokal, Tanpa API) ─────────────────────────
+
+def check_query_relevance(query: str) -> dict:
+    """
+    Memeriksa relevansi query SEBELUM memanggil API Gemini.
+    Menggunakan pendekatan dua lapis:
+      1. Hard Block: Jika mengandung kata kunci off-topic yang jelas, langsung tolak.
+      2. Keyword Match: Harus mengandung minimal 1 kata kunci e-commerce.
+
+    Returns:
+        dict: {
+            "allowed": bool,
+            "reason": str  (pesan yang ditampilkan ke user jika ditolak)
+        }
+    """
+    query_lower = query.lower().strip()
+    query_words = set(re.findall(r'[a-zA-Z\u00C0-\u024F\u0100-\u024F]+', query_lower))
+
+    # Layer 1a: Hard Block — tolak jika ada kata kunci terlarang
+    hard_block_hits = query_words.intersection(_HARD_BLOCK_KEYWORDS)
+    if hard_block_hits:
+        return {
+            "allowed": False,
+            "reason": (
+                f"❌ **Pertanyaan Ditolak — Di Luar Cakupan Dataset**\n\n"
+                f"Pertanyaan Anda terdeteksi mengandung topik **'{', '.join(list(hard_block_hits)[:3])}'** "
+                f"yang tidak berkaitan dengan data ulasan e-commerce.\n\n"
+                f"**AI Business Consultant ini hanya dapat menganalisis:**\n"
+                f"- Ulasan & rating produk dari dataset yang dipilih\n"
+                f"- Sentimen pelanggan (positif / negatif)\n"
+                f"- Keluhan, pujian, dan pengalaman pembeli\n"
+                f"- Tren penjualan, kualitas produk, dan layanan toko\n\n"
+                f"*API tidak dipanggil — tidak ada token yang terpakai.*"
+            ),
+        }
+
+    # Layer 1b: Keyword Match — harus ada minimal 1 kata kunci e-commerce
+    ecommerce_hits = query_words.intersection(_ECOMMERCE_KEYWORDS)
+
+    # Cek juga substring matching untuk kata majemuk seperti "produk apa", "toko ini"
+    full_match = any(kw in query_lower for kw in _ECOMMERCE_KEYWORDS)
+
+    if not ecommerce_hits and not full_match:
+        return {
+            "allowed": False,
+            "reason": (
+                f"❌ **Pertanyaan Tidak Relevan dengan Dataset E-commerce**\n\n"
+                f"Saya tidak dapat menemukan relevansi antara pertanyaan Anda dengan data "
+                f"ulasan pelanggan yang tersedia di dataset.\n\n"
+                f"**Contoh pertanyaan yang bisa saya jawab:**\n"
+                f"- *\"Apa keluhan utama pelanggan tentang kualitas produk?\"*\n"
+                f"- *\"Produk apa yang mendapat rating tertinggi?\"*\n"
+                f"- *\"Mengapa banyak ulasan negatif tentang pengiriman?\"*\n"
+                f"- *\"Apa yang paling banyak dipuji oleh pembeli?\"*\n\n"
+                f"*API tidak dipanggil — tidak ada token yang terpakai.*"
+            ),
+        }
+
+    return {"allowed": True, "reason": ""}
+
+
+# ─── Layer 2: RAG Berbasis TF-IDF ─────────────────────────────────────────────
 
 def retrieve_relevant_reviews(df: pd.DataFrame, query: str, sentiment_filter: str, top_k: int = RAG_TOP_K) -> list[dict]:
     """
@@ -63,12 +172,12 @@ def retrieve_relevant_reviews(df: pd.DataFrame, query: str, sentiment_filter: st
             pass
 
     # Buang baris yang teksnya kosong
-    working_df = working_df[working_df[text_col].astype(str).str.strip() != ""].head(5000)
+    working_df = pd.DataFrame(working_df[pd.Series(working_df[text_col]).astype(str).str.strip() != ""]).head(5000)
     if working_df.empty:
         return []
 
     # Bangun TF-IDF matrix
-    corpus = working_df[text_col].fillna('').astype(str).tolist()
+    corpus = pd.Series(working_df[text_col]).fillna('').astype(str).tolist()
     vectorizer = TfidfVectorizer(
         max_features=5000,
         stop_words='english',
@@ -88,7 +197,6 @@ def retrieve_relevant_reviews(df: pd.DataFrame, query: str, sentiment_filter: st
     for idx in top_indices:
         row = working_df.iloc[idx]
         score = scores[idx]
-        # Normalisasi nama kolom untuk output yang konsisten
         results.append({
             "review_text": str(row.get(text_col, '')),
             "title": str(row.get('title', row.get('_title', ''))),
@@ -99,20 +207,20 @@ def retrieve_relevant_reviews(df: pd.DataFrame, query: str, sentiment_filter: st
     return results
 
 
-# ─── Fitur 1: Prompt Engineering & Pemanggilan Gemini ─────────────────────────
+# ─── Layer 3: Prompt Engineering ──────────────────────────────────────────────
 
 def build_prompt(query: str, retrieved_reviews: list[dict], sentiment_filter: str, dataset_name: str = "Dataset Bawaan (ecommercereviews)") -> str:
     """
-    Membuat prompt terstruktur yang menggabungkan:
-    - Instruksi peran dan format laporan.
-    - Konteks ulasan yang ditemukan via RAG.
-    - Pertanyaan bisnis dari user.
-    - Nama sumber dataset agar Gemini tahu dari mana data berasal.
+    Membuat prompt terstruktur dengan system instruction yang ketat:
+    - Peran AI terbatas hanya pada analisis ulasan e-commerce.
+    - Grounding wajib dari ulasan yang disediakan.
+    - Format output konsisten.
+    - Instruksi penolakan OOC sebagai lapisan sekunder.
     """
     # Format ulasan menjadi teks konteks
     context_parts = []
     for i, r in enumerate(retrieved_reviews, 1):
-        snippet = r['review_text'][:300].replace('\n', ' ')
+        snippet = r['review_text'][:350].replace('\n', ' ')
         rating_display = f"{r['rating']:.0f}/5" if r['rating'] else "N/A"
         title_display = r['title'] if r['title'] and r['title'] != 'nan' else '-'
         context_parts.append(
@@ -120,48 +228,48 @@ def build_prompt(query: str, retrieved_reviews: list[dict], sentiment_filter: st
         )
     context_text = "\n\n".join(context_parts) if context_parts else "Tidak ada ulasan yang ditemukan."
 
-    prompt = f"""Kamu adalah **AI Business Consultant** untuk platform e-commerce. Tugasmu adalah menganalisis data ulasan pelanggan dari dataset yang diberikan dan memberikan laporan bisnis yang actionable, terstruktur, dan berdampak tinggi.
+    prompt = f"""## PERAN & BATASAN SISTEM
+Kamu adalah AI Business Consultant khusus yang HANYA bertugas menganalisis data ulasan pelanggan e-commerce dari dataset yang diberikan. Kamu TIDAK memiliki pengetahuan atau wewenang di luar konteks ini.
+
+**BATASAN KERAS (WAJIB DIPATUHI):**
+1. Kamu HANYA boleh membahas topik yang berkaitan langsung dengan: ulasan pelanggan, rating produk, sentimen pembeli, kualitas produk, layanan penjual, pengalaman transaksi, tren penjualan, dan analisis bisnis e-commerce.
+2. TOLAK DENGAN TEGAS jika pertanyaan menyentuh topik di luar ini (pemrograman, sains, hiburan, kesehatan, dll). Mulai jawaban dengan tag '[STATUS_OUT_OF_CONTEXT]'.
+3. JANGAN pernah mengarang data, statistik, atau nama produk yang tidak ada di ulasan yang diberikan.
+4. JANGAN memberikan saran umum yang tidak bersumber dari ulasan di bawah ini.
 
 ---
 
-## SUMBER DATA
-Dataset yang digunakan: **{dataset_name}**
-Filter yang digunakan: {sentiment_filter}
-Berikut adalah {len(retrieved_reviews)} ulasan pelanggan yang paling relevan dengan topik analisis (diambil secara otomatis oleh sistem RAG):
+## SUMBER DATA ULASAN
+Dataset: **{dataset_name}**
+Filter sentimen: {sentiment_filter}
+Sistem RAG telah mengambil **{len(retrieved_reviews)} ulasan** yang paling relevan dengan pertanyaan:
 
 {context_text}
 
 ---
 
-## PERTANYAAN BISNIS DARI USER
+## PERTANYAAN YANG DIAJUKAN
 {query}
 
 ---
 
-## INSTRUKSI PENTING
+## INSTRUKSI LAPORAN (JIKA DALAM KONTEKS)
 
-**Aturan Grounding (WAJIB DIIKUTI):**
-- Jawab HANYA berdasarkan data ulasan yang diberikan di atas. Jika pertanyaan membutuhkan data spesifik yang tidak ada di dalam ulasan, nyatakan dengan jelas bahwa data tersebut tidak tersedia di dataset.
-- JANGAN mengarang fakta, angka, atau nama produk yang tidak muncul di ulasan yang diberikan.
-- Jika ada kutipan relevan dari ulasan, sertakan potongan kutipannya (dalam tanda kutip) sebagai bukti grounding.
+Jawab HANYA berdasarkan ulasan di atas. Jika informasi spesifik tidak ada di ulasan, nyatakan: "Data tidak tersedia di dataset ini."
 
-**Aturan Out-of-Context (WAJIB DIIKUTI):**
-- Jika pertanyaan user SAMA SEKALI tidak berhubungan dengan analisis data ulasan e-commerce (misalnya: cara membuat program, sains umum, hiburan, atau topik non-bisnis lainnya), WAJIB mulai jawaban dengan tag '[STATUS_OUT_OF_CONTEXT]' di baris pertama. Lanjutkan dengan penjelasan sopan bahwa topik tersebut di luar cakupan dataset, lalu tetap berikan jawaban singkat.
-- Jika pertanyaan BERHUBUNGAN dengan data ulasan, JANGAN sertakan tag '[STATUS_OUT_OF_CONTEXT]'.
-
-**Format Laporan jika Dalam Konteks (Gunakan 3 header ini secara berurutan):**
+Gunakan format berikut secara berurutan:
 
 ### Executive Summary
-(Ringkasan 2-3 kalimat tentang kondisi sentimen dan temuan utama berdasarkan ulasan yang dianalisis. Sebutkan nama dataset sumbernya.)
+(2-3 kalimat: kondisi sentimen keseluruhan & temuan utama. Sebutkan nama dataset dan jumlah ulasan yang dianalisis.)
 
-### Pain Points (Masalah Utama Pelanggan)
-(Daftar bullet point masalah utama yang ditemukan dari ulasan, disertai kutipan langsung dari ulasan jika ada)
+### Pain Points (Masalah Utama)
+(Bullet point masalah yang muncul dari ulasan. Sertakan kutipan langsung dalam tanda kutip sebagai bukti.)
 
-### Action Items (Rekomendasi Perbaikan)
-(Daftar bullet point rekomendasi konkret yang bisa dilakukan tim bisnis berdasarkan temuan di atas)
+### Action Items (Rekomendasi)
+(Bullet point tindakan konkret berbasis temuan di atas. Hanya rekomendasikan hal yang didukung data.)
 
 ---
-Tulis laporan dalam Bahasa Indonesia. Gunakan formatting Markdown yang rapi."""
+Format: Bahasa Indonesia, Markdown rapi."""
     return prompt
 
 
@@ -182,79 +290,57 @@ def call_gemini(api_key: str, model_id: str, prompt: str) -> str:
         return f"**[ERROR Gemini API]**: {str(e)}"
 
 
-# ─── Fitur 3: Hallucination Guard ─────────────────────────────────────────────
+# ─── Layer 4: Hallucination Guard ─────────────────────────────────────────────
 
 def hallucination_guard(report_text: str, retrieved_reviews: list[dict]) -> dict:
     """
     Memeriksa apakah teks laporan Gemini 'berakar' (grounded) pada data ulasan yang diambil.
-    
-    Karena ulasan dalam Bahasa Inggris sedangkan laporan dalam Bahasa Indonesia,
-    metode TF-IDF murni akan menghasilkan skor rendah akibat perbedaan bahasa (vocab mismatch).
-    
-    Algoritma Hybrid ini mengatasi perbedaan bahasa dengan cara:
-    1. Mencari kutipan (quotes) bahasa Inggris dari ulasan yang dikutip langsung oleh Gemini.
-    2. Menghitung overlap kata kunci non-stopwords (bilingual/loanwords/brand terms).
-    3. Menggabungkan kedua skor tersebut secara adil.
-    
-    Returns:
-        dict dengan key: 'grounded' (bool), 'score' (float), 'warning' (str)
+
+    Algoritma Hybrid:
+      1. Quote Matching  : Cari kutipan bahasa Inggris dari ulasan di dalam laporan.
+      2. Key Term Overlap: Hitung tumpang tindih kata kunci non-stopwords.
+      3. Weighted Score  : Gabungkan keduanya (kutipan = 70%, term = 30%).
     """
     if not retrieved_reviews or not report_text.strip():
         return {"grounded": False, "score": 0.0, "warning": "Tidak ada data ulasan untuk verifikasi."}
 
-    # Kumpulkan corpus ulasan
     review_corpus = [r['review_text'] for r in retrieved_reviews if r['review_text'].strip()]
     if not review_corpus:
         return {"grounded": False, "score": 0.0, "warning": "Ulasan kosong, tidak bisa memverifikasi."}
 
-    # 1. Quote Matching: Cari teks di dalam tanda kutip ("..." atau '...')
-    # Gemini biasanya menyertakan kutipan ulasan asli bahasa Inggris di laporan Indonesia
+    # 1. Quote Matching
     quotes = re.findall(r'"([^"]*)"', report_text) + re.findall(r"'([^']*)'", report_text)
     quotes = [q.strip().lower() for q in quotes if len(q.strip()) > 3]
 
     if quotes:
-        found_quotes = 0
-        for q in quotes:
-            if any(q in rev.lower() for rev in review_corpus):
-                found_quotes += 1
+        found_quotes = sum(1 for q in quotes if any(q in rev.lower() for rev in review_corpus))
         quote_score = found_quotes / len(quotes)
     else:
-        # Jika tidak ada kutipan sama sekali, set default 1.0 (lewati filter kutipan)
-        quote_score = 1.0
+        quote_score = 1.0  # Tidak ada kutipan = lewati filter ini
 
-    # 2. Key Term Overlap: Menghitung overlap kata kunci non-stopwords
-    report_words = set(re.findall(r'[a-zA-Z]{3,}', report_text.lower()))
-    
-    # Kumpulan stopwords umum Bahasa Indonesia dan Bahasa Inggris
+    # 2. Key Term Overlap
     stop_words = {
-        "yang", "dan", "untuk", "adalah", "pada", "dalam", "dengan", "dari", "ini", "itu", 
-        "akan", "telah", "oleh", "atau", "hanya", "secara", "terdapat", "adanya", "beberapa", 
-        "pelanggan", "ulasan", "produk", "laporan", "analisis", "rekomendasi", "masalah", 
+        "yang", "dan", "untuk", "adalah", "pada", "dalam", "dengan", "dari", "ini", "itu",
+        "akan", "telah", "oleh", "atau", "hanya", "secara", "terdapat", "adanya", "beberapa",
+        "pelanggan", "ulasan", "produk", "laporan", "analisis", "rekomendasi", "masalah",
         "utama", "serta", "yaitu", "karena", "bahwa", "sebagai", "dapat", "kami", "anda",
-        "the", "and", "for", "with", "this", "that", "from", "they", "were", "have", "been", "was"
+        "the", "and", "for", "with", "this", "that", "from", "they", "were", "have", "been", "was",
+        "data", "dataset", "tidak", "tersedia", "berdasarkan", "ulasan", "review",
     }
-    
-    clean_report_words = report_words - stop_words
+    report_words = set(re.findall(r'[a-zA-Z]{3,}', report_text.lower())) - stop_words
 
-    # Kumpulkan semua kata unik dari review corpus
     review_words = set()
     for rev in review_corpus:
         review_words.update(re.findall(r'[a-zA-Z]{3,}', rev.lower()))
 
-    if clean_report_words:
-        matching_words = clean_report_words.intersection(review_words)
-        term_score = len(matching_words) / len(clean_report_words)
+    if report_words:
+        term_score = len(report_words.intersection(review_words)) / len(report_words)
     else:
         term_score = 1.0
 
-    # 3. Hitung Hybrid Grounding Score
-    # Jika ada kutipan langsung, itu menjadi bukti grounding yang sangat kuat (bobot 70%)
-    if quotes:
-        grounding_score = (quote_score * 0.7) + (term_score * 0.3)
-    else:
-        grounding_score = term_score
+    # 3. Weighted Hybrid Score
+    grounding_score = (quote_score * 0.7 + term_score * 0.3) if quotes else term_score
 
-    # Klasifikasi status grounding
     grounded = grounding_score >= HALLUCINATION_THRESHOLD
     warning = ""
     if not grounded:
@@ -279,39 +365,62 @@ def run_ai_consultant(
     dataset_name: str = "Dataset Bawaan (ecommercereviews)"
 ) -> dict:
     """
-    Menjalankan full pipeline: RAG → Prompt Engineering → Gemini → Hallucination Guard.
-
-    Args:
-        df: DataFrame berisi ulasan (bisa dataset bawaan atau dataset upload).
-        dataset_name: Nama sumber dataset — ditampilkan di prompt & UI agar transparan.
+    Menjalankan full pipeline dengan 5 lapisan:
+      1. Pre-flight Guardrail (lokal, tanpa API call)
+      2. RAG: Ambil ulasan relevan
+      3. Prompt Engineering: Bangun prompt terstruktur
+      4. Gemini API: Generate laporan
+      5. Hallucination Guard: Verifikasi grounding
 
     Returns:
-        dict dengan key: 'report', 'retrieved_count', 'guard_result', 'dataset_name'
+        dict: {
+            'report': str,
+            'retrieved_count': int,
+            'guard_result': dict,
+            'dataset_name': str,
+            'blocked': bool,         # True jika query ditolak pre-flight
+            'block_reason': str      # Pesan penolakan (kosong jika tidak diblokir)
+        }
     """
-    # Step 1 — RAG: Ambil ulasan relevan
+    # ── Step 1: Pre-flight Guardrail (Lokal, TANPA memanggil API) ────────────
+    relevance = check_query_relevance(query)
+    if not relevance["allowed"]:
+        return {
+            "report": "",
+            "retrieved_count": 0,
+            "guard_result": {
+                "grounded": False,
+                "score": 0.0,
+                "warning": ""
+            },
+            "dataset_name": dataset_name,
+            "blocked": True,
+            "block_reason": relevance["reason"],
+        }
+
+    # ── Step 2: RAG — Ambil ulasan relevan ───────────────────────────────────
     retrieved = retrieve_relevant_reviews(df, query, sentiment_filter)
 
-    # Step 2 — Prompt Engineering: Bangun prompt (sertakan nama dataset)
+    # ── Step 3: Prompt Engineering ────────────────────────────────────────────
     prompt = build_prompt(query, retrieved, sentiment_filter, dataset_name)
 
-    # Step 3 — Gemini: Generate laporan
+    # ── Step 4: Gemini API ────────────────────────────────────────────────────
     report = call_gemini(api_key, model_id, prompt)
 
-    # Cek deteksi out-of-context tag
+    # Cek deteksi out-of-context dari respons Gemini (secondary guardrail)
     out_of_context = "[STATUS_OUT_OF_CONTEXT]" in report
-
-    # Bersihkan tag agar tidak tampil di laporan final
     cleaned_report = re.sub(r'\[STATUS_OUT_OF_CONTEXT\]', '', report, flags=re.IGNORECASE).strip()
 
-    # Step 4 — Hallucination Guard: Verifikasi grounding
+    # ── Step 5: Hallucination Guard ───────────────────────────────────────────
     guard_result = hallucination_guard(cleaned_report, retrieved)
 
     if out_of_context:
         guard_result["grounded"] = False
         guard_result["score"] = 0.0
         guard_result["warning"] = (
-            "⚠️ **Pemberitahuan**: Pertanyaan Anda terdeteksi berada di luar konteks ulasan e-commerce. "
-            "AI memberikan jawaban umum berdasarkan pengetahuan umumnya (bukan dari ulasan)."
+            "⚠️ **Pemberitahuan**: Pertanyaan Anda terdeteksi berada di luar konteks "
+            "ulasan e-commerce meskipun lolos seleksi awal. AI memberikan jawaban umum "
+            "berdasarkan pengetahuan umumnya (bukan dari ulasan)."
         )
 
     return {
@@ -319,4 +428,6 @@ def run_ai_consultant(
         "retrieved_count": len(retrieved),
         "guard_result": guard_result,
         "dataset_name": dataset_name,
+        "blocked": False,
+        "block_reason": "",
     }

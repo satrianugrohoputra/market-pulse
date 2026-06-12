@@ -11,7 +11,6 @@ Dilengkapi stopwords Bahasa Indonesia bawaan (tanpa library eksternal).
 import os
 import re
 import pickle
-import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer, ENGLISH_STOP_WORDS
 from sklearn.linear_model import LogisticRegression
@@ -66,7 +65,7 @@ def clean_text(text: str) -> str:
 
 # ─── Fungsi: Train-On-The-Fly ─────────────────────────────────────────────────
 
-def run_train_on_the_fly(df: pd.DataFrame) -> dict:
+def run_train_on_the_fly(df: pd.DataFrame) -> dict | None:
     """
     Melatih model TF-IDF + Logistic Regression langsung dari dataset baru.
     Dataset sudah dibersihkan oleh upload_processor (kolom: _review_text, _rating).
@@ -76,16 +75,16 @@ def run_train_on_the_fly(df: pd.DataFrame) -> dict:
     # Filter: hanya rating 1-2 (Negatif) dan 4-5 (Positif), buang rating 3
     df_train = df[df["_rating"].notna()].copy()
     df_train = df_train[df_train["_rating"] != 3]
-    df_train["_sentiment"] = df_train["_rating"].apply(lambda x: 1 if x >= 4 else 0)
+    df_train["_sentiment"] = pd.Series(df_train["_rating"]).apply(lambda x: 1 if x >= 4 else 0)
 
     # Cek apakah cukup sampel per kelas
-    class_counts = df_train["_sentiment"].value_counts()
+    class_counts = pd.Series(df_train["_sentiment"]).value_counts()
     if len(class_counts) < 2 or class_counts.min() < MIN_SAMPLES_PER_CLASS:
         return None  # Sinyal untuk menggunakan fallback
 
     # Bersihkan teks
-    df_train["_cleaned"] = df_train["_review_text"].apply(clean_text)
-    df_train = df_train[df_train["_cleaned"].str.strip() != ""]
+    df_train["_cleaned"] = pd.Series(df_train["_review_text"]).apply(clean_text)
+    df_train = df_train[pd.Series(df_train["_cleaned"]).str.strip() != ""]
 
     X = df_train["_cleaned"]
     y = df_train["_sentiment"]
@@ -116,7 +115,7 @@ def run_train_on_the_fly(df: pd.DataFrame) -> dict:
 
     y_pred = model.predict(X_test_vec)
     accuracy = accuracy_score(y_test, y_pred)
-    report = classification_report(y_test, y_pred, target_names=["Negatif", "Positif"], zero_division=0)
+    report = classification_report(y_test, y_pred, target_names=["Negatif", "Positif"], zero_division=0)  # type: ignore
 
     return {
         "model": model,
@@ -198,7 +197,7 @@ def predict_sentiments(df: pd.DataFrame) -> pd.DataFrame:
 
     df["_predicted_ind"] = None
     df.loc[valid_mask, "_predicted_ind"] = predictions
-    df["_predicted_label"] = df["_predicted_ind"].map({1: "Positif", 0: "Negatif"})
+    df["_predicted_label"] = pd.Series(df["_predicted_ind"]).map(lambda x: {1: "Positif", 0: "Negatif"}.get(x))
     df["_is_corrected"] = False
 
     # Rule-Based Correction: koreksi prediksi yang bertabrakan dengan rating
