@@ -32,7 +32,7 @@ with st.sidebar:
         )
 
         if uploaded_file is not None:
-            # Simpan info file ke session agar Section 8 bisa membacanya
+            # Simpan info file ke session agar Section 5 bisa membacanya
             if st.session_state.get("_last_uploaded_name") != uploaded_file.name:
                 st.session_state["_last_uploaded_name"] = uploaded_file.name
                 st.session_state["_upload_result"] = None  # Reset hasil lama
@@ -57,7 +57,7 @@ with st.sidebar:
                         f"- Kolom Ulasan: `{result['text_col']}`\n"
                         f"- Kolom Rating: `{result['rating_col'] or 'Tidak ditemukan'}`"
                     )
-                    st.caption("Scroll ke bawah → lihat **Section 8** untuk hasil analisis.")
+                    st.caption("Scroll ke bawah → lihat **Section 5** untuk hasil analisis.")
 
 # ==================== HALAMAN UTAMA: HEADER ====================
 st.title("📊 Market-Pulse: E-commerce Analytics")
@@ -548,9 +548,12 @@ if st.button("✨ Generate Insight", type="primary", use_container_width=True, k
                 df_for_rag = db.get_csv_data()
                 dataset_name = "Dataset Bawaan (ecommercereviews)"
 
-            with st.spinner(f"🔍 Mencari ulasan relevan via RAG dari '{dataset_name}'... lalu memanggil {selected_model_id}..."):
+            import pandas as pd
+            df_for_rag_df = df_for_rag if isinstance(df_for_rag, pd.DataFrame) else pd.DataFrame(df_for_rag)
+
+            with st.spinner(f"🔍 Memeriksa relevansi & mencari ulasan dari '{dataset_name}'..."):
                 result = aic.run_ai_consultant(
-                    df=df_for_rag,
+                    df=df_for_rag_df,
                     query=ai_query,
                     api_key=api_key,
                     model_id=selected_model_id,
@@ -558,32 +561,42 @@ if st.button("✨ Generate Insight", type="primary", use_container_width=True, k
                     dataset_name=dataset_name,
                 )
 
-            report = result["report"]
-            retrieved_count = result["retrieved_count"]
-            guard = result["guard_result"]
-            grounding_score = guard["score"]
-            used_dataset = result.get("dataset_name", "")
+            # ── Cek: Apakah query diblokir Pre-flight Guardrail? ────────────────────
+            if result.get("blocked"):
+                st.markdown("---")
+                st.error(result["block_reason"])
+                st.info(
+                    "💡 **Tip**: AI Consultant ini dirancang khusus untuk menganalisis data "
+                    "ulasan e-commerce. Pastikan pertanyaan Anda berkaitan dengan ulasan produk, "
+                    "rating, sentimen pelanggan, atau performa toko."
+                )
+            else:
+                report = result["report"]
+                retrieved_count = result["retrieved_count"]
+                guard = result["guard_result"]
+                grounding_score = guard["score"]
+                used_dataset = result.get("dataset_name", "")
 
-            # ── Status Grounding Badge ──────────────────────────────────────────
-            st.markdown("---")
-            st.caption(f"🗂️ Sumber data RAG: **{used_dataset}** | Filter: **{sentiment_filter}**")
-            badge_col1, badge_col2, badge_col3 = st.columns(3)
-            with badge_col1:
-                st.metric("📄 Ulasan Dianalisis (RAG)", f"{retrieved_count} ulasan")
-            with badge_col2:
-                score_pct = f"{grounding_score * 100:.1f}%"
-                st.metric("🛡️ Grounding Score", score_pct, help="Seberapa besar laporan ini bersumber dari data ulasan Anda.")
-            with badge_col3:
-                if guard["grounded"]:
-                    st.success("✅ **Grounded in Data**")
-                else:
-                    st.warning("⚠️ **Jawaban Umum (Kurang Data)**")
+                # ── Status Grounding Badge ───────────────────────────────────
+                st.markdown("---")
+                st.caption(f"🗂️ Sumber data RAG: **{used_dataset}** | Filter: **{sentiment_filter}** | Model: `{selected_model_id}`")
+                badge_col1, badge_col2, badge_col3 = st.columns(3)
+                with badge_col1:
+                    st.metric("📄 Ulasan Dianalisis (RAG)", f"{retrieved_count} ulasan")
+                with badge_col2:
+                    score_pct = f"{grounding_score * 100:.1f}%"
+                    st.metric("🛡️ Grounding Score", score_pct, help="Seberapa besar laporan ini bersumber dari data ulasan Anda.")
+                with badge_col3:
+                    if guard["grounded"]:
+                        st.success("✅ **Grounded in Data**")
+                    else:
+                        st.warning("⚠️ **Jawaban Umum / Kurang Data**")
 
-            # ── Tampilkan Hallucination Warning Jika Perlu ──────────────────────
-            if not guard["grounded"] and guard["warning"]:
-                st.warning(guard["warning"])
+                # ── Tampilkan Hallucination Warning Jika Perlu ────────────────────
+                if not guard["grounded"] and guard["warning"]:
+                    st.warning(guard["warning"])
 
-            # ── Tampilkan Laporan Gemini ────────────────────────────────────────
-            st.markdown("### 📋 Laporan AI Business Insight")
-            st.markdown(report)
-
+                # ── Tampilkan Laporan Gemini ─────────────────────────────────
+                st.markdown("### 📋 Laporan AI Business Insight")
+                st.markdown(report)
+

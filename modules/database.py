@@ -1,4 +1,4 @@
-# pyrefly: ignore [untyped-import]
+# pyrefly: ignore [missing-import, untyped-import]
 import psycopg2
 import pandas as pd
 import streamlit as st
@@ -39,17 +39,18 @@ def get_csv_data():
         df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
         
         # Ganti nama kolom index kosong jika ada
-        if df.columns[0] == "" or df.columns[0].startswith("unnamed"):
+        first_col = str(df.columns[0])
+        if first_col == "" or first_col.startswith("unnamed"):
             df.rename(columns={df.columns[0]: "id"}, inplace=True)
             
         # Isi data yang kosong dan konversi tipe data secara aman (coerce errors to NaN)
-        df['title'] = df['title'].fillna('').astype(str)
-        df['review_text'] = df['review_text'].fillna('').astype(str)
+        df['title'] = pd.Series(df['title']).fillna('').astype(str)
+        df['review_text'] = pd.Series(df['review_text']).fillna('').astype(str)
         
-        df['recommended_ind'] = pd.to_numeric(df['recommended_ind'], errors='coerce').fillna(0).astype(int)
-        df['rating'] = pd.to_numeric(df['rating'], errors='coerce').fillna(0).astype(int)
-        df['age'] = pd.to_numeric(df['age'], errors='coerce').fillna(0).astype(int)
-        df['positive_feedback_count'] = pd.to_numeric(df['positive_feedback_count'], errors='coerce').fillna(0).astype(int)
+        df['recommended_ind'] = pd.Series(pd.to_numeric(df['recommended_ind'], errors='coerce')).fillna(0).astype(int)
+        df['rating'] = pd.Series(pd.to_numeric(df['rating'], errors='coerce')).fillna(0).astype(int)
+        df['age'] = pd.Series(pd.to_numeric(df['age'], errors='coerce')).fillna(0).astype(int)
+        df['positive_feedback_count'] = pd.Series(pd.to_numeric(df['positive_feedback_count'], errors='coerce')).fillna(0).astype(int)
         
         # Hanya ambil data dengan rating valid 1 s.d. 5 (membuang data bergeser/malformed)
         df = df[df['rating'].between(1, 5)]
@@ -92,7 +93,7 @@ def run_query(query):
                 avg_rating=('rating', lambda x: round(x.mean(), 2))
             ).reset_index()
             gp.columns = ["Division", "Department", "Class", "Total Reviews", "Recommendation Percentage", "Average Rating"]
-            return gp.sort_values(by="Total Reviews", ascending=False)
+            return pd.DataFrame(gp).sort_values(by="Total Reviews", ascending=False)
             
         # 3. Keluhan: QUERY_KELUHAN_PRODUK
         elif "defect rate" in q_clean:
@@ -103,7 +104,7 @@ def run_query(query):
             gp['Defect Rate'] = round((gp['neg_reviews'] / gp['total_reviews']) * 100, 2)
             gp.columns = ["Division", "Department", "Class", "Negative Reviews", "Total Reviews", "Defect Rate"]
             gp = gp[gp["Negative Reviews"] > 10]
-            return gp.sort_values(by="Negative Reviews", ascending=False)
+            return pd.DataFrame(gp).sort_values(by="Negative Reviews", ascending=False)
             
         # 4. Efektivitas: QUERY_EFEKTIVITAS_ULASAN
         elif "average helpful votes" in q_clean:
@@ -112,12 +113,12 @@ def run_query(query):
                 max_helpful=('positive_feedback_count', 'max')
             ).reset_index()
             gp.columns = ["Rating", "Average Helpful Votes", "Max Helpful Votes"]
-            return gp.sort_values(by="Rating", ascending=False).reset_index(drop=True)
+            return pd.DataFrame(gp).sort_values(by="Rating", ascending=False).reset_index(drop=True)
             
         # 5. Segmentasi: QUERY_SEGMENTASI_PASAR
         elif "age group" in q_clean:
             df_temp = df_all.copy()
-            df_temp['Age Group'] = df_temp['age'].apply(
+            df_temp['Age Group'] = pd.Series(df_temp['age']).apply(
                 lambda age: 'Gen Z' if age < 30 else ('Milenial' if 30 <= age <= 45 else 'Gen X/Boomers')
             )
             gp = df_temp.groupby(['Age Group', 'department_name']).agg(
@@ -125,7 +126,7 @@ def run_query(query):
                 avg_rating=('rating', lambda x: round(x.mean(), 2))
             ).reset_index()
             gp.columns = ["Age Group", "Department", "Total Purchase", "Average Rating"]
-            return gp.sort_values(by=["Age Group", "Total Purchase"], ascending=[True, False])
+            return pd.DataFrame(gp).sort_values(by=["Age Group", "Total Purchase"], ascending=[True, False])
             
         # 6. Populer: QUERY_PRODUK_POPULER
         elif "total positive feedback" in q_clean:
@@ -136,7 +137,7 @@ def run_query(query):
                 rec_rate=('recommended_ind', lambda x: round(x.mean() * 100, 2))
             ).reset_index()
             gp.columns = ["Clothing ID", "Division", "Department", "Class", "Review Count", "Total Positive Feedback", "Average Rating", "Recommended Rate"]
-            return gp.sort_values(by="Total Positive Feedback", ascending=False).head(10).reset_index(drop=True)
+            return pd.DataFrame(gp).sort_values(by="Total Positive Feedback", ascending=False).head(10).reset_index(drop=True)
             
         # 7. Dinamis: QUERY_DINAMIS
         elif "ilike" in q_clean:
@@ -154,11 +155,11 @@ def run_query(query):
             if keyword_val:
                 keyword_val = keyword_val.lower()
                 filtered = filtered[
-                    filtered['title'].str.lower().str.contains(keyword_val) | 
-                    filtered['review_text'].str.lower().str.contains(keyword_val)
+                    pd.Series(filtered['title']).str.lower().str.contains(keyword_val) | 
+                    pd.Series(filtered['review_text']).str.lower().str.contains(keyword_val)
                 ]
             
-            result = filtered[['division_name', 'department_name', 'class_name', 'title', 'review_text', 'rating']].head(10)
+            result = pd.DataFrame(filtered[['division_name', 'department_name', 'class_name', 'title', 'review_text', 'rating']]).head(10)
             result.columns = ["Division", "Department", "Class", "Review Title", "Review Text", "Rating"]
             return result.reset_index(drop=True)
             
@@ -222,7 +223,10 @@ def insert_dataset(file_name: str, row_count: int,
         conn = get_connection()
         cur = conn.cursor()
         cur.execute(sql, (file_name, row_count, detected_language, detected_domain))
-        dataset_id = cur.fetchone()[0]
+        row = cur.fetchone()
+        if row is None:
+            raise ValueError("Gagal mendapatkan dataset ID baru.")
+        dataset_id = row[0]
         conn.commit()
         cur.close()
         conn.close()
@@ -273,4 +277,4 @@ def bulk_insert_reviews(df: pd.DataFrame, dataset_id: int, chunksize: int = 1000
         conn.close()
         return {"ok": True, "inserted": total_inserted, "error": None}
     except Exception as e:
-        return {"ok": False, "inserted": total_inserted, "error": str(e)}
+        return {"ok": False, "inserted": total_inserted, "error": str(e)}

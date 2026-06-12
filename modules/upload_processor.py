@@ -85,6 +85,7 @@ def read_file_to_df(uploaded_file) -> pd.DataFrame:
             return df
     except Exception as e:
         raise ValueError(f"Gagal membaca file: {str(e)}")
+    raise ValueError("Format file tidak didukung.")
 
 
 # ─── Fungsi: Deteksi Kolom Dinamis ───────────────────────────────────────────
@@ -151,7 +152,7 @@ def detect_columns(df: pd.DataFrame) -> dict:
 
 # ─── Fungsi: Pembersihan Data ─────────────────────────────────────────────────
 
-def clean_data(df: pd.DataFrame, text_col: str, rating_col: str = None) -> pd.DataFrame:
+def clean_data(df: pd.DataFrame, text_col: str, rating_col: str | None = None) -> pd.DataFrame:
     """
     Membersihkan DataFrame: hapus null, duplikat, konversi tipe data.
     Returns DataFrame yang sudah bersih.
@@ -159,11 +160,11 @@ def clean_data(df: pd.DataFrame, text_col: str, rating_col: str = None) -> pd.Da
     df = df.copy()
 
     # Normalisasi nama kolom internal
-    df["_review_text"] = df[text_col].astype(str).str.strip()
+    df["_review_text"] = pd.Series(df[text_col]).astype(str).str.strip()
 
     # Hapus baris dengan teks kosong atau terlalu pendek (< 3 karakter)
-    df = df[df["_review_text"].str.len() >= 3]
-    df = df[df["_review_text"] != "nan"]
+    df = pd.DataFrame(df[pd.Series(df["_review_text"]).str.len() >= 3])
+    df = pd.DataFrame(df[pd.Series(df["_review_text"]) != "nan"])
 
     # Hapus duplikat berdasarkan teks ulasan
     df = df.drop_duplicates(subset=["_review_text"])
