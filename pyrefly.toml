@@ -1,0 +1,19 @@
+[tool.pyrefly]
+# Hanya lakukan analisis tipe data pada file kode proyek utama
+project-includes = [
+    "app.py",
+    "ai_consultant.py",
+    "database.py",
+    "queries.py",
+    "clean_csv.py",
+    "train_model.py"
+]
+
+# Kecualikan pustaka eksternal, cache, dan file virtual in-memory Pyrefly
+project-excludes = [
+    "**/venv/**",
+    "**/.venv/**",
+    "**/env/**",
+    "**/site-packages/**",
+    "**/__pyrefly_virtual__/**"
+]
