@@ -1,7 +1,8 @@
 pandas==3.0.3
 plotly==6.8.0
+psycopg2==2.9.12
+types-psycopg2
 streamlit==1.58.0
 scikit-learn
 google-genai
 openpyxl
-
