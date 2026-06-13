@@ -83,22 +83,18 @@ st.write("---")
 col_pop1, col_pop2 = st.columns([2, 1])
 
 with col_pop1:
-    st.subheader("🔥 Top 10 Produk Populer (Banyak Di-upvote Pelanggan)")
+    st.subheader("🔥 Top 10 Kategori Produk Populer (Banyak Di-upvote Pelanggan)")
     df_populer = db.run_query(q.QUERY_PRODUK_POPULER)
     
-    # 1. Pastikan kolom diubah menjadi string
-    df_populer["Clothing ID"] = df_populer["Clothing ID"].astype(str)
-    
     fig_pop = px.bar(df_populer, 
-                     x="Clothing ID", 
+                     x="Product Category", 
                      y="Total Positive Feedback",
                      text="Total Positive Feedback", 
                      color="Average Rating",
-                     labels={"Clothing ID": "ID Produk", "Total Positive Feedback": "Total Upvote (Helpful)"},
-                     title="Produk Paling Banyak Mendapat Interaksi Positif",
+                     labels={"Product Category": "Nama Kategori / Item", "Total Positive Feedback": "Total Upvote (Helpful)"},
+                     title="Kategori Produk Paling Banyak Mendapat Interaksi Positif",
                      color_continuous_scale=px.colors.sequential.Viridis)
     
-    # 2. TAMBAHKAN TYPE='CATEGORY' DI SINI UNTUK MEMAKSA PLOTLY MENGHAPUS SKALA ANGKA
     fig_pop.update_layout(
         xaxis={
             'type': 'category',
@@ -212,10 +208,16 @@ else:
             f"Sistem mengambil sampel acak **{up.MAX_ROWS:,} baris** untuk analisis."
         )
 
-    # Preview 5 baris pertama
-    with st.expander("🔎 Preview Data (5 baris pertama)", expanded=False):
-        preview_cols = [c for c in ["_review_text", "_rating"] if c in df_uploaded.columns]
-        st.dataframe(df_uploaded[preview_cols].head(), hide_index=True)
+    # Tampilkan tabel data ulasan yang diunggah secara langsung (scrollable)
+    st.markdown("#### 📋 Data Ulasan yang Diunggah")
+    preview_cols = [c for c in ["_review_text", "_rating"] if c in df_uploaded.columns]
+    rename_preview = {"_review_text": "Teks Ulasan", "_rating": "Rating"}
+    st.dataframe(
+        df_uploaded[preview_cols].rename(columns=rename_preview),
+        hide_index=True,
+        use_container_width=True
+    )
+
 
     # ── Tombol Analisis Sentimen ───────────────────────────────────────────────
     if st.button("🤖 Jalankan Analisis Sentimen", type="primary", key="btn_run_sentiment"):
@@ -260,85 +262,208 @@ else:
         with m3:
             st.metric("📊 Total Dianalisis", f"{n_total:,}")
 
-        # Grafik distribusi sentimen
+        # Grafik distribusi sentimen & Top 5 Produk Positif/Negatif
         if n_total > 0:
             import plotly.express as px
-            sentiment_counts = valid["_predicted_label"].value_counts().reset_index()
-            sentiment_counts.columns = ["Sentimen", "Jumlah"]
-            fig_sent = px.pie(
-                sentiment_counts,
-                names="Sentimen",
-                values="Jumlah",
-                color="Sentimen",
-                color_discrete_map={"Positif": "#22c55e", "Negatif": "#ef4444"},
-                title=f"Distribusi Sentimen — {fname}",
-                hole=0.45
-            )
-            st.plotly_chart(fig_sent, use_container_width=False)
+            
+            # Deteksi kolom produk/item secara dinamis
+            product_col = None
+            potential_product_cols = [
+                "clothing_id", "clothing id", "product_name", "product name", 
+                "product_id", "product id", "class_name", "class name", 
+                "class", "item", "nama_produk", "nama produk", "produk", 
+                "id_produk", "id produk"
+            ]
+            
+            for col in df_analyzed.columns:
+                if col.lower().strip() in potential_product_cols:
+                    product_col = col
+                    break
+            
+            if not product_col:
+                for col in df_analyzed.columns:
+                    col_lower = col.lower().strip()
+                    if any(k in col_lower for k in ["product", "produk", "item", "class"]):
+                        if col not in ["_review_text", "_rating", "_predicted_label", "_predicted_ind", "_is_corrected"]:
+                            product_col = col
+                            break
+                            
+            if not product_col:
+                for col in df_analyzed.columns:
+                    if col not in ["_review_text", "_rating", "_predicted_label", "_predicted_ind", "_is_corrected"] and not col.startswith("_"):
+                        product_col = col
+                        break
 
-        # Tabel hasil (bisa diunduh)
+            st.write("---")
+            st.markdown("#### 📊 Visualisasi Analisis Detil")
+            
+            col_chart1, col_chart2, col_chart3 = st.columns([1.1, 1.2, 1.2])
+            
+            with col_chart1:
+                st.markdown("<p style='text-align: center; font-weight: bold;'>Distribusi Sentimen</p>", unsafe_allow_html=True)
+                sentiment_counts = valid["_predicted_label"].value_counts().reset_index()
+                sentiment_counts.columns = ["Sentimen", "Jumlah"]
+                fig_sent = px.pie(
+                    sentiment_counts,
+                    names="Sentimen",
+                    values="Jumlah",
+                    color="Sentimen",
+                    color_discrete_map={"Positif": "#22c55e", "Negatif": "#ef4444"},
+                    hole=0.45
+                )
+                fig_sent.update_layout(
+                    margin=dict(l=10, r=10, t=10, b=10),
+                    height=280,
+                    showlegend=True,
+                    legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5)
+                )
+                st.plotly_chart(fig_sent, use_container_width=True)
+                
+            with col_chart2:
+                st.markdown("<p style='text-align: center; font-weight: bold; color: #22c55e;'>🌟 Top 5 Produk Terlaku (Positif)</p>", unsafe_allow_html=True)
+                if product_col:
+                    df_pos_reviews = df_analyzed[df_analyzed["_predicted_label"] == "Positif"]
+                    if not df_pos_reviews.empty:
+                        top_5_pos = df_pos_reviews.groupby(product_col).size().reset_index(name="Jumlah")
+                        top_5_pos[product_col] = top_5_pos[product_col].astype(str)
+                        top_5_pos = top_5_pos.sort_values(by="Jumlah", ascending=True).tail(5)
+                        
+                        fig_pos = px.bar(
+                            top_5_pos,
+                            x="Jumlah",
+                            y=product_col,
+                            orientation="h",
+                            text="Jumlah",
+                            color_discrete_sequence=["#22c55e"],
+                            labels={product_col: "Nama Item", "Jumlah": "Ulasan"}
+                        )
+                        fig_pos.update_layout(
+                            margin=dict(l=10, r=10, t=10, b=10),
+                            height=280,
+                            xaxis=dict(showgrid=False),
+                            yaxis=dict(categoryorder="total ascending")
+                        )
+                        st.plotly_chart(fig_pos, use_container_width=True)
+                    else:
+                        st.info("Tidak ada ulasan positif untuk ditampilkan.")
+                else:
+                    st.caption("ℹ️ Unggah dataset dengan kolom kategori/nama produk untuk melihat visualisasi produk populer.")
+
+            with col_chart3:
+                st.markdown("<p style='text-align: center; font-weight: bold; color: #ef4444;'>⚠️ Top 5 Produk Bermasalah (Negatif)</p>", unsafe_allow_html=True)
+                if product_col:
+                    df_neg_reviews = df_analyzed[df_analyzed["_predicted_label"] == "Negatif"]
+                    if not df_neg_reviews.empty:
+                        top_5_neg = df_neg_reviews.groupby(product_col).size().reset_index(name="Jumlah")
+                        top_5_neg[product_col] = top_5_neg[product_col].astype(str)
+                        top_5_neg = top_5_neg.sort_values(by="Jumlah", ascending=True).tail(5)
+                        
+                        fig_neg = px.bar(
+                            top_5_neg,
+                            x="Jumlah",
+                            y=product_col,
+                            orientation="h",
+                            text="Jumlah",
+                            color_discrete_sequence=["#ef4444"],
+                            labels={product_col: "Nama Item", "Jumlah": "Ulasan"}
+                        )
+                        fig_neg.update_layout(
+                            margin=dict(l=10, r=10, t=10, b=10),
+                            height=280,
+                            xaxis=dict(showgrid=False),
+                            yaxis=dict(categoryorder="total ascending")
+                        )
+                        st.plotly_chart(fig_neg, use_container_width=True)
+                    else:
+                        st.info("Tidak ada ulasan negatif untuk ditampilkan.")
+                else:
+                    st.caption("ℹ️ Unggah dataset dengan kolom kategori/nama produk untuk melihat visualisasi produk bermasalah.")
+
+        # ── Penyaring Interaktif Hasil Analisis ───────────────────────────────────
+        st.write("---")
+        st.markdown("### 🔎 Eksplorasi & Saring Hasil Analisis")
+        st.markdown("Gunakan filter di bawah untuk menelusuri hasil analisis sentimen ulasan yang Anda unggah secara interaktif.")
+
+        col_uf1, col_uf2, col_uf3 = st.columns(3)
+        with col_uf1:
+            keyword_filter = st.text_input(
+                "Cari Ulasan (Kata Kunci):",
+                placeholder="Ketik kata kunci untuk mencari...",
+                key="uploaded_keyword_filter"
+            )
+        with col_uf2:
+            if "_rating" in df_analyzed.columns:
+                unique_ratings = sorted(df_analyzed["_rating"].dropna().unique().tolist())
+                unique_ratings = [int(r) if r.is_integer() else r for r in unique_ratings]
+                rating_options = ["Semua Rating"] + [str(r) for r in unique_ratings]
+            else:
+                rating_options = ["Semua Rating"]
+            
+            selected_rating = st.selectbox(
+                "Filter Rating:",
+                options=rating_options,
+                index=0,
+                key="uploaded_rating_filter"
+            )
+        with col_uf3:
+            selected_sentiment = st.selectbox(
+                "Filter Sentimen:",
+                options=["Semua Sentimen", "Positif", "Negatif"],
+                index=0,
+                key="uploaded_sentiment_filter"
+            )
+
+        # Proses filtering dataframe secara dinamis
+        df_filtered = df_analyzed.copy()
+
+        # 1. Filter Kata Kunci
+        if keyword_filter.strip() != "":
+            df_filtered = df_filtered[
+                df_filtered["_review_text"].fillna("").str.lower().str.contains(keyword_filter.lower(), na=False)
+            ]
+
+        # 2. Filter Rating
+        if selected_rating != "Semua Rating":
+            val_rating = float(selected_rating)
+            df_filtered = df_filtered[df_filtered["_rating"] == val_rating]
+
+        # 3. Filter Sentimen
+        if selected_sentiment != "Semua Sentimen":
+            df_filtered = df_filtered[df_filtered["_predicted_label"] == selected_sentiment]
+
+        # Tampilkan statistik jumlah baris tercocok
+        total_matched = len(df_filtered)
+        st.caption(f"📊 Menampilkan **{total_matched:,}** dari **{len(df_analyzed):,}** ulasan hasil filter.")
+
+        # Tampilkan dataframe interaktif (scrollable & lebar penuh)
         show_cols = ["_review_text", "_rating", "_predicted_label", "_is_corrected"]
-        show_cols = [c for c in show_cols if c in df_analyzed.columns]
+        show_cols = [c for c in show_cols if c in df_filtered.columns]
         rename_map = {
             "_review_text": "Teks Ulasan",
             "_rating": "Rating",
             "_predicted_label": "Sentimen Prediksi",
             "_is_corrected": "Dikoreksi Rule-Based"
         }
-        with st.expander("📋 Lihat Tabel Hasil Analisis", expanded=False):
-            st.dataframe(
-                df_analyzed[show_cols].rename(columns=rename_map),
-                hide_index=True,
-                use_container_width=False
-            )
 
-        # ── Opsi Ekspor/Simpan Hasil (Ekspor CSV & Simpan ke DB) ──────────────────
+        st.dataframe(
+            df_filtered[show_cols].rename(columns=rename_map),
+            hide_index=True,
+            use_container_width=True
+        )
+
+        # ── Opsi Ekspor Hasil (Ekspor CSV) ──────────────────
         st.markdown("---")
-        st.markdown("#### 💾 Simpan / Ekspor Hasil Analisis")
-
-        dl_col, db_col = st.columns(2)
-        with dl_col:
-            st.markdown("**1. Unduh Hasil Sebagai CSV**")
-            st.caption("Unduh hasil prediksi sentimen dataset ini langsung ke komputer Anda.")
-            csv_data = df_analyzed[show_cols].rename(columns=rename_map).to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Download CSV Hasil Analisis",
-                data=csv_data,
-                file_name=f"hasil_analisis_{fname}.csv",
-                mime="text/csv",
-                key="download_csv_btn",
-                use_container_width=True
-            )
-
-        with db_col:
-            st.markdown("**2. Simpan ke Database PostgreSQL**")
-            st.caption("Simpan dataset beserta hasil analisis sentimen secara permanen ke database.")
-            if st.button("💾 Simpan ke PostgreSQL", key="btn_save_db", use_container_width=True):
-                with st.spinner("Menginisialisasi schema dan menyimpan data..."):
-                    # 1. Init schema jika belum ada
-                    schema_res = db.init_schema()
-                    if not schema_res["ok"]:
-                        st.error(f"❌ Gagal membuat schema: {schema_res['error']}")
-                    else:
-                        # 2. Insert metadata dataset
-                        ds_res = db.insert_dataset(
-                            file_name=fname,
-                            row_count=len(df_analyzed)
-                        )
-                        if not ds_res["ok"]:
-                            st.error(f"❌ Gagal menyimpan metadata dataset: {ds_res['error']}")
-                        else:
-                            # 3. Bulk insert ulasan
-                            insert_res = db.bulk_insert_reviews(df_analyzed, ds_res["dataset_id"])
-                            if insert_res["ok"]:
-                                st.success(
-                                    f"✅ **Berhasil disimpan!** "
-                                    f"**{insert_res['inserted']:,} ulasan** dari `{fname}` "
-                                    f"(Dataset ID: `{ds_res['dataset_id']}`) telah tersimpan di PostgreSQL."
-                                )
-                            else:
-                                st.error(f"❌ Gagal menyimpan ulasan: {insert_res['error']}")
-
+        st.markdown("#### 💾 Ekspor Hasil Analisis")
+        st.caption("Unduh hasil prediksi sentimen dataset ini langsung ke komputer Anda.")
+        csv_data = df_analyzed[show_cols].rename(columns=rename_map).to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Download CSV Hasil Analisis",
+            data=csv_data,
+            file_name=f"hasil_analisis_{fname}.csv",
+            mime="text/csv",
+            key="download_csv_btn",
+            use_container_width=True
+        )
 st.write("---")
 
 # ==================== BARIS 6: SIMULATOR PREDIKSI SENTIMEN INSTAN (REQ KELOMPOK!) ====================
