@@ -1,4 +1,3 @@
-# pyrefly: ignore [missing-import, untyped-import]
 import pandas as pd
 import streamlit as st
 import os
