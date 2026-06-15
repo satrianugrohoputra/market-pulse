@@ -9,15 +9,7 @@ import modules.ml_pipeline as mlp
 # 1. Konfigurasi Halaman Dashboard (Wide Mode & Tema Dasar)
 st.set_page_config(page_title="Market-Pulse Dashboard", layout="wide", page_icon="📊")
 
-# ==================== SIDEBAR NAVIGASI & LOGO ====================
-with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/3222/3222665.png", width=80) # Logo estetik opsional
-    st.title("🎛️ Pusat Kendali")
-    st.markdown("Aplikasi **Market-Pulse** v1.1")
-    st.write("---")
-    st.markdown("Developed by Kelompok 2")
-    st.markdown("🎓 *Celerates Independent Study 2026*")
-    st.write("---")
+    _upload_result = st.session_state.get("_upload_result")
 
     # ==================== SIDEBAR: UPLOAD DATASET BARU ====================
     with st.expander("📤 Upload Dataset Baru  ▶", expanded=False):
@@ -116,19 +108,11 @@ st.write("---")
 # ==================== BARIS 3: SEGMENTASI PASAR & KELUHAN ====================
 col1, col2 = st.columns(2)
 
-with col1:
-    st.subheader("👥 Karakteristik Pasar Berdasarkan Usia & Departemen")
-    df_pasar = db.run_query(q.QUERY_SEGMENTASI_PASAR)
+    st.write("---")
     
-    # Menggunakan Grouped Bar Chart agar kelihatan per departemennya membeli apa saja
-    fig_pasar = px.bar(df_pasar, x="Age Group", y="Total Purchase",
-                       color="Department", barmode="group",
-                       title="Volume Pembelian Berdasarkan Generasi Usia")
-    st.plotly_chart(fig_pasar, use_container_width=True)
-
-with col2:
-    st.subheader("⚠️ Titik Masalah: Ulasan Negatif per Kategori")
-    df_keluhan = db.run_query(q.QUERY_KELUHAN_PRODUK)
+    # ── SUB-MENU B: SIMULATOR PREDIKSI SENTIMENT INSTAN (ML X NLP) ──
+    st.subheader("🔮 2. Simulator Prediksi Sentimen (Hybrid ML & Rules)")
+    st.markdown("Ketik ulasan baru secara instan untuk menguji model klasifikasi.")
     
     # Menampilkan Defect Rate yang sudah diperbaiki tipe datanya kemarin
     fig_keluhan = px.bar(df_keluhan, x="Class", y="Defect Rate",
@@ -639,31 +623,11 @@ with col_ai1:
         key="ai_query_input"
     )
 
-with col_ai2:
-    # Dropdown pemilihan model Gemini
-    selected_model_label = st.selectbox(
-        "🧠 Pilih Model Gemini:",
-        options=list(aic.GEMINI_MODELS.keys()),
-        index=0,  # Default: gemini-3.1-flash-lite (paling hemat)
-        help=(
-            "• **3.1 Flash-Lite** (Default): Tercepat & paling hemat token. Cocok untuk analisis rutin.\n"
-            "• **3.5 Flash**: Lebih cerdas, cocok untuk pertanyaan kompleks.\n"
-            "• **2.5 Flash**: Paling kuat, untuk analisis mendalam."
-        ),
-        key="ai_model_select"
-    )
-    selected_model_id = (
-        aic.GEMINI_MODELS.get(selected_model_label, "gemini-3.1-flash-lite")
-        if selected_model_label
-        else "gemini-3.1-flash-lite"
-    )
+    st.write("---")
 
-    sentiment_filter = st.selectbox(
-        "📊 Filter Ulasan:",
-        options=["Semua Ulasan", "Hanya Negatif (Rating ≤ 2)", "Hanya Positif (Rating ≥ 4)"],
-        index=0,
-        key="ai_sentiment_filter"
-    )
+    # ── SUB-MENU C: AI BUSINESS CONSULTANT (RAG + GEMINI) ──
+    st.subheader("🤖 3. AI Business Consultant (Powered by Gemini)")
+    st.markdown("Ajukan pertanyaan bisnis Anda. AI akan mengekstrak data ulasan via RAG lalu merangkumnya menggunakan Google Gemini.")
 
     search_method = st.selectbox(
         "🔍 Metode Pencarian:",
@@ -678,16 +642,22 @@ with col_ai2:
 
 st.caption(f"🔧 Model aktif: `{selected_model_id}` | Akan menganalisis hingga **{aic.RAG_TOP_K} ulasan** paling relevan dari dataset.")
 
-# ── Tombol Generate Insight ─────────────────────────────────────────────────────
-if st.button("✨ Generate Insight", type="primary", use_container_width=True, key="btn_generate_insight"):
-    if not ai_query.strip():
-        st.warning("⚠️ Silakan tulis pertanyaan bisnis Anda terlebih dahulu.")
-        st.stop()
+    if _has_uploaded:
+        rag_data_source = st.radio("📁 **Sumber Data untuk AI Consultant:**", options=[f"📂 Dataset yang Diunggah: `{_uploaded_fname}`", "🗄️ Dataset Bawaan (ecommercereviews)"], index=0, horizontal=True, key="rag_source")
     else:
-        # Ambil API key dari secrets
-        api_key = st.secrets.get("GEMINI_API_KEY", "")
-        if not api_key:
-            st.error("❌ API Key Gemini tidak ditemukan di `.streamlit/secrets.toml`. Tambahkan: `GEMINI_API_KEY = \"...key-anda...\"`")
+        rag_data_source = "🗄️ Dataset Bawaan (ecommercereviews)"
+
+    col_ai1, col_ai2 = st.columns([2, 1])
+    with col_ai1:
+        ai_query = st.text_area("💬 Pertanyaan Bisnis Anda:", placeholder="Contoh: Apa keluhan utama pelanggan tentang kualitas bahan pakaian?", height=100, key="rag_query")
+    with col_ai2:
+        selected_model_label = st.selectbox("🧠 Pilih Model Gemini:", options=list(aic.GEMINI_MODELS.keys()), index=0, key="rag_model")
+        selected_model_id = aic.GEMINI_MODELS.get(selected_model_label, "gemini-3.1-flash-lite")
+        sentiment_filter = st.selectbox("📊 Filter Ulasan:", options=["Semua Ulasan", "Hanya Negatif (Rating ≤ 2)", "Hanya Positif (Rating ≥ 4)"], index=0, key="rag_filter")
+
+    if st.button("✨ Generate Insight", type="primary", use_container_width=True, key="btn_gemini_run"):
+        if not ai_query.strip():
+            st.warning("⚠️ Silakan tulis pertanyaan bisnis Anda terlebih dahulu.")
         else:
             # Tentukan sumber data dan nama dataset berdasarkan pilihan radio
             if _has_uploaded and "Diunggah" in rag_data_source:
@@ -721,6 +691,16 @@ if st.button("✨ Generate Insight", type="primary", use_container_width=True, k
                     "rating, sentimen pelanggan, atau performa toko."
                 )
             else:
+                if _has_uploaded and "Diunggah" in rag_data_source:
+                    df_for_rag = st.session_state["_upload_result"]["df"]
+                    dataset_name = _uploaded_fname
+                else:
+                    df_for_rag = db.get_csv_data()
+                    dataset_name = "Dataset Bawaan (ecommercereviews)"
+
+                with st.spinner("🔍 Mencari data ulasan relevan via RAG..."):
+                    result = aic.run_ai_consultant(df=df_for_rag, query=ai_query, api_key=api_key, model_id=selected_model_id, sentiment_filter=sentiment_filter, dataset_name=dataset_name)
+
                 report = result["report"]
                 retrieved_count = result["retrieved_count"]
                 guard = result["guard_result"]
