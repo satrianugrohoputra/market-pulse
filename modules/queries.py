@@ -72,20 +72,18 @@ WHERE r.title IS NOT NULL
 LIMIT 15;
 """
 
-# 6. Produk Paling Populer Berdasarkan Positive Feedback
+# 6. Kategori Produk Paling Populer Berdasarkan Positive Feedback
 QUERY_PRODUK_POPULER = """
 SELECT 
-    r.clothing_id as "Clothing ID",
-    r.division_name as "Division",
+    r.class_name as "Product Category",
     r.department_name as "Department",
-    r.class_name as "Class",
     count(*) as "Review Count",
     sum(r.positive_feedback_count) as "Total Positive Feedback",
     round(avg(r.rating), 2) as "Average Rating",
     round(avg(r.recommended_ind) * 100, 2) as "Recommended Rate"
 FROM reviews r 
-WHERE r.clothing_id IS NOT NULL and r.class_name IS NOT NULL
-GROUP BY r.clothing_id, r.division_name, r.department_name, r.class_name 
+WHERE r.class_name IS NOT NULL
+GROUP BY r.class_name, r.department_name 
 ORDER BY "Total Positive Feedback" DESC
 LIMIT 10;
 """
