@@ -39,8 +39,9 @@ INDONESIAN_STOPWORDS = {
     "lagi", "kl", "klo", "kalo", "tp", "tapi", "tdk", "tidak",
 }
 
-# Gabungkan dengan stopwords Inggris dari sklearn
-ALL_STOPWORDS = set(ENGLISH_STOP_WORDS) | INDONESIAN_STOPWORDS
+# Gabungkan dengan stopwords Inggris dari sklearn, kecualikan kata negasi
+NEGATION_WORDS = {"not", "no", "never", "without", "but", "tidak", "kurang", "belum", "bukan", "jangan", "tapi", "namun", "tanpa"}
+ALL_STOPWORDS = (set(ENGLISH_STOP_WORDS) | INDONESIAN_STOPWORDS) - NEGATION_WORDS
 
 
 # ─── Konstanta ────────────────────────────────────────────────────────────────
@@ -97,7 +98,7 @@ def run_train_on_the_fly(df: pd.DataFrame) -> dict | None:
     # TF-IDF dengan ngram dan sublinear scaling
     vectorizer = TfidfVectorizer(
         max_features=5000,
-        ngram_range=(1, 2),     # Tangkap frasa: "tidak bagus", "sangat oke"
+        ngram_range=(1, 3),     # Tangkap frasa negasi dan penguat (unigram, bigram, trigram)
         sublinear_tf=True,      # Skalakan tf agar kata dominan tidak menguasai
         stop_words=list(ALL_STOPWORDS)
     )

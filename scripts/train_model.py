@@ -36,7 +36,8 @@ INDONESIAN_STOPWORDS = {
     "emang", "blm", "sdh", "krn", "karna", "bgt", "banget", "lg", "kl",
     "klo", "kalo", "tp", "tdk",
 }
-ALL_STOPWORDS = list(set(ENGLISH_STOP_WORDS) | INDONESIAN_STOPWORDS)
+NEGATION_WORDS = {"not", "no", "never", "without", "but", "tidak", "kurang", "belum", "bukan", "jangan", "tapi", "namun", "tanpa"}
+ALL_STOPWORDS = list((set(ENGLISH_STOP_WORDS) | INDONESIAN_STOPWORDS) - NEGATION_WORDS)
 
 
 # ─── Fungsi: Pembersihan Teks ─────────────────────────────────────────────────
@@ -106,10 +107,10 @@ def train_and_save():
     print(f"   Train: {len(X_train):,} | Test: {len(X_test):,}")
 
     # -- TF-IDF Vectorizer (Fase 5 update) --
-    print("[INFO] Ekstraksi fitur menggunakan TF-IDF (ngram_range=(1,2))...")
+    print("[INFO] Ekstraksi fitur menggunakan TF-IDF (ngram_range=(1,3))...")
     vectorizer = TfidfVectorizer(
         max_features=5000,
-        ngram_range=(1, 2),     # Tangkap frasa: "tidak bagus", "sangat memuaskan"
+        ngram_range=(1, 3),     # Tangkap frasa negasi dan penguat (unigram, bigram, trigram)
         sublinear_tf=True,      # Skalakan frekuensi kata agar lebih adil
         stop_words=ALL_STOPWORDS
     )

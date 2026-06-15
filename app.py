@@ -525,31 +525,43 @@ if os.path.exists(model_path) and os.path.exists(vectorizer_path):
         
         if st.button("Analisis Sentimen Hybrid", type="primary", use_container_width=True):
             if user_review.strip() != "":
-                # 1. Preprocessing & ML Prediction
-                cleaned_text = preprocess_input(user_review)
+                # 1. Preprocessing & ML Prediction (using mlp.clean_text for bilingual and negation support)
+                cleaned_text = mlp.clean_text(user_review)
                 vectorized_text = vectorizer.transform([cleaned_text])
                 ml_prediction = model.predict(vectorized_text)[0] # 0 = Negatif, 1 = Positif
-                probability = model.predict_proba(vectorized_text)[0]
+                probability = model.predict_proba(vectorized_text)[0] # [prob_neg, prob_pos]
                 
-                # 2. Rule-Based Override Layer (Ref: system_design.md)
-                final_sentiment = None
-                override_applied = False
+                # 2. Soft Weighted Ensemble Layer (Combining ML Text Probability & Rating Prior)
+                p_text = float(probability[1]) # Probabilitas positif dari ML
                 
-                # Cek pilihan rating
-                if rating_choice and ("1 Bintang" in rating_choice or "2 Bintang" in rating_choice):
-                    final_sentiment = "Negatif"
-                    if ml_prediction == 1:
-                        override_applied = True
-                elif rating_choice and ("4 Bintang" in rating_choice or "5 Bintang" in rating_choice):
-                    final_sentiment = "Positif"
-                    if ml_prediction == 0:
-                        override_applied = True
-                elif rating_choice and "3 Bintang" in rating_choice:
-                    final_sentiment = "Netral"
-                    override_applied = True
+                # Petakan Rating Bintang ke Probabilitas Positif (Prior)
+                rating_map = {
+                    "1 Bintang (Negatif)": 0.10,
+                    "2 Bintang (Negatif)": 0.25,
+                    "3 Bintang (Netral)": 0.50,
+                    "4 Bintang (Positif)": 0.75,
+                    "5 Bintang (Positif)": 0.90
+                }
+                
+                if rating_choice in rating_map:
+                    p_rating = rating_map[rating_choice]
+                    w_text = 0.60
+                    w_rating = 0.40
+                    p_final = (w_text * p_text) + (w_rating * p_rating)
+                    use_ensemble_note = True
                 else:
-                    # Murni ML
-                    final_sentiment = "Positif" if ml_prediction == 1 else "Negatif"
+                    # Prediksi ML Murni (Tanpa Rating)
+                    p_final = p_text
+                    use_ensemble_note = False
+                
+                # Tentukan Label Akhir berdasarkan Ambang Batas (Threshold)
+                # >= 0.60: Positif, <= 0.40: Negatif, antaranya: Netral
+                if p_final >= 0.60:
+                    final_sentiment = "Positif"
+                elif p_final <= 0.40:
+                    final_sentiment = "Negatif"
+                else:
+                    final_sentiment = "Netral"
                 
                 # Tampilkan visualisasi hasil
                 st.markdown("### 📊 Hasil Analisis Sentimen")
@@ -561,17 +573,18 @@ if os.path.exists(model_path) and os.path.exists(vectorizer_path):
                 
                 # Tampilkan hasil akhir setelah digabung dengan aturan rating
                 if final_sentiment == "Positif":
-                    st.success(f"🟢 **Sentimen Akhir: POSITIF**")
-                    if override_applied:
-                        st.caption(r"ℹ️ *Catatan: Sentimen dikoreksi menjadi Positif berdasarkan rating bintang $\ge 4$ (Rule-based Override).*")
+                    st.success(f"🟢 **Sentimen Akhir: POSITIF** (Skor Gabungan: {p_final*100:.2f}%)")
+                    if use_ensemble_note:
+                        st.caption("ℹ️ *Catatan: Sentimen Akhir merupakan hasil kombinasi bobot (Ensemble) dari Model ML (60%) dan Rating Bintang (40%).*")
                     st.balloons()
                 elif final_sentiment == "Negatif":
-                    st.error(f"🔴 **Sentimen Akhir: NEGATIF**")
-                    if override_applied:
-                        st.caption(r"ℹ️ *Catatan: Sentimen dikoreksi menjadi Negatif berdasarkan rating bintang $\le 2$ (Rule-based Override).*")
+                    st.error(f"🔴 **Sentimen Akhir: NEGATIF** (Skor Gabungan: {p_final*100:.2f}%)")
+                    if use_ensemble_note:
+                        st.caption("ℹ️ *Catatan: Sentimen Akhir merupakan hasil kombinasi bobot (Ensemble) dari Model ML (60%) dan Rating Bintang (40%).*")
                 else:
-                    st.warning(f"🟡 **Sentimen Akhir: NETRAL**")
-                    st.caption("ℹ️ *Catatan: Sentimen disetel menjadi Netral berdasarkan rating bintang 3 (Rule-based Override).*")
+                    st.warning(f"🟡 **Sentimen Akhir: NETRAL** (Skor Gabungan: {p_final*100:.2f}%)")
+                    if use_ensemble_note:
+                        st.caption("ℹ️ *Catatan: Sentimen Akhir merupakan hasil kombinasi bobot (Ensemble) dari Model ML (60%) dan Rating Bintang (40%).*")
             else:
                 st.warning("Silakan masukkan teks ulasan terlebih dahulu.")
                 st.stop()
@@ -652,6 +665,17 @@ with col_ai2:
         key="ai_sentiment_filter"
     )
 
+    search_method = st.selectbox(
+        "🔍 Metode Pencarian:",
+        options=["Pencarian Kata Kunci (TF-IDF)", "Pencarian Semantik (MiniLM)"],
+        index=0,
+        help=(
+            "• **Pencarian Kata Kunci (TF-IDF)**: Mencari kecocokan kata persis. Sangat cepat.\n"
+            "• **Pencarian Semantik (MiniLM)**: Mencari berdasarkan kesamaan arti ulasan, mendukung ulasan bilingual (EN/ID)."
+        ),
+        key="ai_search_method"
+    )
+
 st.caption(f"🔧 Model aktif: `{selected_model_id}` | Akan menganalisis hingga **{aic.RAG_TOP_K} ulasan** paling relevan dari dataset.")
 
 # ── Tombol Generate Insight ─────────────────────────────────────────────────────
@@ -683,6 +707,7 @@ if st.button("✨ Generate Insight", type="primary", use_container_width=True, k
                     api_key=api_key,
                     model_id=selected_model_id,
                     sentiment_filter=sentiment_filter,
+                    search_method=search_method,
                     dataset_name=dataset_name,
                 )
 
@@ -701,10 +726,11 @@ if st.button("✨ Generate Insight", type="primary", use_container_width=True, k
                 guard = result["guard_result"]
                 grounding_score = guard["score"]
                 used_dataset = result.get("dataset_name", "")
+                used_method = result.get("search_method", "TF-IDF")
 
                 # ── Status Grounding Badge ───────────────────────────────────
                 st.markdown("---")
-                st.caption(f"🗂️ Sumber data RAG: **{used_dataset}** | Filter: **{sentiment_filter}** | Model: `{selected_model_id}`")
+                st.caption(f"🗂️ Sumber data RAG: **{used_dataset}** | Metode: **{used_method}** | Filter: **{sentiment_filter}** | Model: `{selected_model_id}`")
                 badge_col1, badge_col2, badge_col3 = st.columns(3)
                 with badge_col1:
                     st.metric("📄 Ulasan Dianalisis (RAG)", f"{retrieved_count} ulasan")

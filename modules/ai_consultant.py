@@ -12,10 +12,61 @@ Mengimplementasikan pipeline lengkap:
 
 import re
 import os
+import hashlib
+from typing import cast
 import pandas as pd
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+
+_EMBEDDING_MODEL = None
+
+def get_embedding_model():
+    """Lazy-load the SentenceTransformer model to save startup memory/time."""
+    global _EMBEDDING_MODEL
+    if _EMBEDDING_MODEL is None:
+        from sentence_transformers import SentenceTransformer
+        _EMBEDDING_MODEL = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+    return _EMBEDDING_MODEL
+
+
+def get_dataset_embeddings(df: pd.DataFrame, text_col: str) -> np.ndarray:
+    """
+    Mengambil atau menghitung vector embeddings untuk seluruh ulasan di dataset.
+    Hasilnya disimpan dalam file cache .npy lokal agar pencarian berikutnya instan.
+    """
+    if df.empty:
+        return np.empty((0, 0))
+
+    # Gunakan sidik jari dataframe untuk membuat hash unik
+    first_text = str(df.iloc[0].get(text_col, ''))
+    last_text = str(df.iloc[-1].get(text_col, ''))
+    length = len(df)
+    fingerprint = f"{first_text}_{last_text}_{length}"
+    df_hash = hashlib.md5(fingerprint.encode('utf-8')).hexdigest()
+
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cache_dir = os.path.join(base_dir, "models")
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_path = os.path.join(cache_dir, f"embeddings_{df_hash}.npy")
+
+    if os.path.exists(cache_path):
+        try:
+            return np.load(cache_path)
+        except Exception:
+            pass
+
+    # Hitung jika tidak ada di cache
+    model = get_embedding_model()
+    corpus = df[text_col].fillna('').astype(str).tolist()
+    embeddings = model.encode(corpus, show_progress_bar=False, convert_to_numpy=True)
+
+    try:
+        np.save(cache_path, embeddings)
+    except Exception:
+        pass
+
+    return embeddings
 
 
 # ─── Konstanta ────────────────────────────────────────────────────────────────
@@ -143,12 +194,18 @@ def check_query_relevance(query: str) -> dict:
 
 # ─── Layer 2: RAG Berbasis TF-IDF ─────────────────────────────────────────────
 
-def retrieve_relevant_reviews(df: pd.DataFrame, query: str, sentiment_filter: str, top_k: int = RAG_TOP_K) -> list[dict]:
+def retrieve_relevant_reviews(
+    df: pd.DataFrame,
+    query: str,
+    sentiment_filter: str,
+    search_method: str = "Pencarian Kata Kunci (TF-IDF)",
+    top_k: int = RAG_TOP_K
+) -> list[dict]:
     """
-    Mengambil ulasan yang paling relevan dengan query menggunakan TF-IDF cosine similarity.
-    Mendukung dua nama kolom teks: 'review_text' (dataset bawaan) dan '_review_text' (dataset upload).
+    Mengambil ulasan yang paling relevan dengan query menggunakan TF-IDF atau MiniLM semantic search.
+    Mendukung filter sentimen dan mendeteksi kolom secara otomatis.
     """
-    working_df = df.copy()
+    working_df = cast(pd.DataFrame, df.copy())
 
     # Deteksi kolom teks secara otomatis (dataset bawaan vs dataset upload)
     if '_review_text' in working_df.columns:
@@ -160,23 +217,79 @@ def retrieve_relevant_reviews(df: pd.DataFrame, query: str, sentiment_filter: st
     else:
         return []
 
-    # Filter berdasarkan sentimen (hanya jika kolom rating tersedia)
+    # Buang baris yang teksnya kosong di awal agar index sinkron
+    working_df = cast(pd.DataFrame, working_df[pd.Series(working_df[text_col]).astype(str).str.strip() != ""].copy())
+    if working_df.empty:
+        return []
+
+    # Tambahkan index asli untuk memetakan vector embedding setelah filter
+    working_df['_orig_idx'] = range(len(working_df))
+
+    # Cek metode pencarian
+    if "Semantik" in search_method:
+        try:
+            # 1. Hitung/Ambil Embedding untuk seluruh teks (sebelum difilter)
+            full_embeddings = get_dataset_embeddings(cast(pd.DataFrame, working_df), text_col)
+            
+            # 2. Terapkan filter sentimen ke dataframe
+            if rating_col:
+                try:
+                    working_df[rating_col] = pd.to_numeric(working_df[rating_col], errors='coerce')
+                    if "Negatif" in sentiment_filter:
+                        working_df = cast(pd.DataFrame, working_df[working_df[rating_col] <= 2])
+                    elif "Positif" in sentiment_filter:
+                        working_df = cast(pd.DataFrame, working_df[working_df[rating_col] >= 4])
+                except Exception:
+                    pass
+            
+            if working_df.empty:
+                return []
+            
+            # Batasi head(5000) seperti versi legacy untuk efisiensi
+            working_df = cast(pd.DataFrame, working_df.head(5000))
+            
+            # 3. Iris embedding untuk baris yang cocok dengan filter
+            matched_indices = working_df['_orig_idx'].tolist()
+            sliced_embeddings = full_embeddings[matched_indices]
+            
+            # 4. Hitung Query Embedding & similarity
+            model = get_embedding_model()
+            query_vec = model.encode([query], show_progress_bar=False, convert_to_numpy=True)
+            
+            scores = cosine_similarity(query_vec, sliced_embeddings).flatten()
+            top_indices = np.argsort(scores)[::-1][:top_k]
+            
+            results = []
+            for idx in top_indices:
+                row = working_df.iloc[idx]
+                score = scores[idx]
+                results.append({
+                    "review_text": str(row.get(text_col, '')),
+                    "title": str(row.get('title', row.get('_title', ''))),
+                    "rating": float(row.get(rating_col, 0)) if rating_col else 0,
+                    "score": float(score),
+                })
+            return results
+            
+        except Exception:
+            # Fallback otomatis ke TF-IDF jika ada masalah
+            pass
+
+    # --- FALLBACK / LEGACY TF-IDF KEYWORD SEARCH ---
     if rating_col:
         try:
             working_df[rating_col] = pd.to_numeric(working_df[rating_col], errors='coerce')
             if "Negatif" in sentiment_filter:
-                working_df = working_df[working_df[rating_col] <= 2]
+                working_df = cast(pd.DataFrame, working_df[working_df[rating_col] <= 2])
             elif "Positif" in sentiment_filter:
-                working_df = working_df[working_df[rating_col] >= 4]
+                working_df = cast(pd.DataFrame, working_df[working_df[rating_col] >= 4])
         except Exception:
             pass
 
-    # Buang baris yang teksnya kosong
-    working_df = pd.DataFrame(working_df[pd.Series(working_df[text_col]).astype(str).str.strip() != ""]).head(5000)
+    working_df = cast(pd.DataFrame, working_df.head(5000))
     if working_df.empty:
         return []
 
-    # Bangun TF-IDF matrix
     corpus = pd.Series(working_df[text_col]).fillna('').astype(str).tolist()
     vectorizer = TfidfVectorizer(
         max_features=5000,
@@ -188,7 +301,6 @@ def retrieve_relevant_reviews(df: pd.DataFrame, query: str, sentiment_filter: st
     except ValueError:
         return []
 
-    # Hitung skor kemiripan
     query_vec = vectorizer.transform([query])
     scores = cosine_similarity(query_vec, tfidf_matrix).flatten()
     top_indices = np.argsort(scores)[::-1][:top_k]
@@ -362,12 +474,13 @@ def run_ai_consultant(
     api_key: str,
     model_id: str,
     sentiment_filter: str,
+    search_method: str = "Pencarian Kata Kunci (TF-IDF)",
     dataset_name: str = "Dataset Bawaan (ecommercereviews)"
 ) -> dict:
     """
     Menjalankan full pipeline dengan 5 lapisan:
       1. Pre-flight Guardrail (lokal, tanpa API call)
-      2. RAG: Ambil ulasan relevan
+      2. RAG: Ambil ulasan relevan menggunakan TF-IDF atau Semantic Search
       3. Prompt Engineering: Bangun prompt terstruktur
       4. Gemini API: Generate laporan
       5. Hallucination Guard: Verifikasi grounding
@@ -378,6 +491,7 @@ def run_ai_consultant(
             'retrieved_count': int,
             'guard_result': dict,
             'dataset_name': str,
+            'search_method': str,
             'blocked': bool,         # True jika query ditolak pre-flight
             'block_reason': str      # Pesan penolakan (kosong jika tidak diblokir)
         }
@@ -394,12 +508,13 @@ def run_ai_consultant(
                 "warning": ""
             },
             "dataset_name": dataset_name,
+            "search_method": search_method,
             "blocked": True,
             "block_reason": relevance["reason"],
         }
 
     # ── Step 2: RAG — Ambil ulasan relevan ───────────────────────────────────
-    retrieved = retrieve_relevant_reviews(df, query, sentiment_filter)
+    retrieved = retrieve_relevant_reviews(df, query, sentiment_filter, search_method)
 
     # ── Step 3: Prompt Engineering ────────────────────────────────────────────
     prompt = build_prompt(query, retrieved, sentiment_filter, dataset_name)
@@ -428,6 +543,7 @@ def run_ai_consultant(
         "retrieved_count": len(retrieved),
         "guard_result": guard_result,
         "dataset_name": dataset_name,
+        "search_method": search_method,
         "blocked": False,
         "block_reason": "",
     }
