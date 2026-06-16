@@ -77,6 +77,116 @@ col_pop1, col_pop2 = st.columns([2, 1])
 with col_pop1:
     st.subheader("🔥 Top 10 Kategori Produk Populer (Banyak Di-upvote Pelanggan)")
     df_populer = db.run_query(q.QUERY_PRODUK_POPULER)
+    # ==================== BARIS 2: PRODUK POPULER & LOYALITAS ====================
+    col_pop1, col_pop2 = st.columns([2, 1])
+
+    with col_pop1:
+        st.subheader("🔥 Top 10 Produk Populer")
+        df_populer = db.run_query(q.QUERY_PRODUK_POPULER)
+        df_populer["Clothing ID"] = df_populer["Clothing ID"].astype(str)
+        if "product_name" in df_populer.columns:
+            sumbu_x = "product_name"
+            label_x = "Nama Produk"
+        elif "nama_produk" in df_populer.columns:
+            sumbu_x = "nama_produk"
+            label_x = "Nama Produk"
+        else:
+            # Fallback jika tidak ada kolom nama (kondisi dataset sekarang)
+            sumbu_x = "Clothing ID"
+            label_x = "ID Produk"
+        
+        fig_pop = px.bar(df_populer, 
+                         x=sumbu_x, 
+                         y="Total Positive Feedback",
+                         text="Total Positive Feedback", 
+                         color="Average Rating",
+                         labels={sumbu_x: label_x, "Total Positive Feedback": "Total Upvote (Helpful)"},
+                         title="Produk Paling Banyak Mendapat Interaksi Positif",
+                         color_continuous_scale=px.colors.sequential.Viridis)
+        
+        fig_pop.update_layout(xaxis={'type': 'category', 'categoryorder': 'total descending'})
+        st.plotly_chart(fig_pop, use_container_width=True)
+
+    with col_pop2:
+        st.subheader("🎯 Loyalitas per Departemen")
+        df_loyal = db.run_query(q.QUERY_LOYALITAS_PELANGGAN)
+        fig_loyal = px.pie(df_loyal, values="Total Reviews", names="Department", hole=0.4, title="Distribusi Volume Ulasan")
+        st.plotly_chart(fig_loyal, use_container_width=True)
+
+
+# ==================== MENU 2: ANALISIS KOMPLAIN & PASAR ====================
+elif menu == "⚠️ Analisis Komplain & Pasar":
+    # ==================== BARIS 3: SEGMENTASI PASAR & KELUHAN ====================
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("👥 Karakteristik Pasar Berdasarkan Usia & Departemen")
+        df_pasar = db.run_query(q.QUERY_SEGMENTASI_PASAR)
+        fig_pasar = px.bar(df_pasar, x="Age Group", y="Total Purchase", color="Department", barmode="group", title="Volume Pembelian Berdasarkan Generasi Usia")
+        st.plotly_chart(fig_pasar, use_container_width=True)
+
+    with col2:
+        st.subheader("⚠️ Titik Masalah: Ulasan Negatif per Kategori")
+        df_keluhan = db.run_query(q.QUERY_KELUHAN_PRODUK)
+        fig_keluhan = px.bar(df_keluhan, 
+                             x="Class", 
+                             y="Defect Rate",
+                             text="Negative Reviews", 
+                             color="Defect Rate",
+                             hover_data={"Division": True, "Department": True, "Class": True, "Defect Rate": ":.2f"},
+                             labels={"Defect Rate": "Rasio Cacat (%)", "Class": "Kategori Kelas"},
+                             title="Kategori dengan Komplain > 10 Ulasan (Label: Jumlah Komplain)",
+                             color_continuous_scale=px.colors.sequential.OrRd)
+        
+        fig_keluhan.update_layout(xaxis_categoryorder='total descending')
+        st.plotly_chart(fig_keluhan, use_container_width=True)
+
+
+# ==================== MENU 3: PENCARIAN ULASAN DINAMIS ====================
+elif menu == "🔍 Pencarian Ulasan Dinamis":
+    # ==================== BARIS 4: FITUR FILTER KATA KUNCI DINAMIS ====================
+    st.subheader("🔍 Mesin Pencari & Penyaring Ulasan Pelanggan")
+    st.markdown("Fitur interaktif untuk menyaring curhatan pelanggan berdasarkan kata kunci dan rating.")
+
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        kata_kunci = st.text_input("Ketik Kata Kunci yang Dicari (Contoh: love, perfect, fabric, size):", "perfect")
+    with col_f2:
+        pilihan_rating = st.selectbox("Pilih Rating Ulasan Pelanggan:", [5, 4, 3, 2, 1], index=0)
+
+    QUERY_DINAMIS = f"""
+    SELECT 
+        division_name AS "Division", 
+        department_name AS "Department", 
+        class_name AS "Class", 
+        title AS "Review Title", 
+        review_text AS "Review Text", 
+        rating AS "Rating"
+    FROM reviews
+    WHERE (title ILIKE '%%{kata_kunci}%%' OR review_text ILIKE '%%{kata_kunci}%%') 
+      AND rating = {pilihan_rating}
+    LIMIT 10;
+    """
+    df_dinamis = db.run_query(QUERY_DINAMIS)
+
+    if not df_dinamis.empty:
+        st.dataframe(df_dinamis, use_container_width=True, hide_index=True)
+    else:
+        st.info(f"Tidak ada ulasan dengan kata kunci '{kata_kunci}' pada Rating {pilihan_rating}.")
+
+    st.write("---")
+
+    # ==================== BARIS 5: TABEL DETAIL EFEKTIVITAS ULASAN ====================
+    st.subheader("💡 Efektivitas Ulasan Ekstrem Berdasarkan Rating")
+    df_efektif = db.run_query(q.QUERY_EFEKTIVITAS_ULASAN)
+    st.dataframe(df_efektif, use_container_width=True)
+
+
+# ==================== MENU 4: PUSAT KENDALI AI KELOMPOK ====================
+elif menu == "🔮 Simulator & Evaluator AI":
+    st.title("🔮 Pusat Kendali Kecerdasan Buatan (AI Modules)")
+    st.markdown("Halaman ini mengintegrasikan model Machine Learning (NLP) kelompok dan Konsultan AI Generatif Gemini.")
+    st.write("---")
     
     fig_pop = px.bar(df_populer, 
                      x="Product Category", 
