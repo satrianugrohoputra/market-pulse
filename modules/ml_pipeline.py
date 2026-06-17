@@ -12,6 +12,7 @@ import os
 import re
 import pickle
 import pandas as pd
+import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer, ENGLISH_STOP_WORDS
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
@@ -194,26 +195,50 @@ def predict_sentiments(df: pd.DataFrame) -> pd.DataFrame:
     # Vectorize dan prediksi
     valid_mask = df["_cleaned_text"].str.strip() != ""
     X_vec = vectorizer.transform(df.loc[valid_mask, "_cleaned_text"])
-    predictions = model.predict(X_vec)
+    
+    # Dapatkan probability kelas Positif
+    if hasattr(model, "predict_proba"):
+        probabilities = model.predict_proba(X_vec)
+        p_text = probabilities[:, 1]
+    else:
+        # Fallback jika model tidak punya predict_proba
+        predictions = model.predict(X_vec)
+        p_text = np.where(predictions == 1, 0.90, 0.10)
 
+    # Inisialisasi kolom output
     df["_predicted_ind"] = None
-    df.loc[valid_mask, "_predicted_ind"] = predictions
-    df["_predicted_label"] = pd.Series(df["_predicted_ind"]).map(lambda x: {1: "Positif", 0: "Negatif"}.get(x))
+    df["_predicted_label"] = "Tidak Tersedia"
     df["_is_corrected"] = False
 
-    # Rule-Based Correction: koreksi prediksi yang bertabrakan dengan rating
-    if has_rating:
-        # Rating 1-2 tapi diprediksi Positif → koreksi ke Negatif
-        mask_false_pos = (df["_rating"] <= 2) & (df["_predicted_ind"] == 1)
-        df.loc[mask_false_pos, "_predicted_ind"] = 0
-        df.loc[mask_false_pos, "_predicted_label"] = "Negatif"
-        df.loc[mask_false_pos, "_is_corrected"] = True
-
-        # Rating 4-5 tapi diprediksi Negatif → koreksi ke Positif
-        mask_false_neg = (df["_rating"] >= 4) & (df["_predicted_ind"] == 0)
-        df.loc[mask_false_neg, "_predicted_ind"] = 1
-        df.loc[mask_false_neg, "_predicted_label"] = "Positif"
-        df.loc[mask_false_neg, "_is_corrected"] = True
+    if valid_mask.any():
+        if has_rating:
+            # Map rating ke prior probability sesuai spesifikasi proyek
+            rating_prior_map = {1: 0.10, 2: 0.25, 3: 0.50, 4: 0.75, 5: 0.90}
+            p_rating = df.loc[valid_mask, "_rating"].map(rating_prior_map).fillna(0.50).values
+            
+            # Hitung skor akhir menggunakan Soft Weighted Ensemble (60% ML, 40% Rating)
+            w_text = 0.60
+            w_rating = 0.40
+            p_final = (w_text * p_text) + (w_rating * p_rating)
+            
+            # Klasifikasikan sentimen berdasarkan threshold ensemble
+            final_inds = np.where(p_final >= 0.60, 1, np.where(p_final <= 0.40, 0, 2))
+            df.loc[valid_mask, "_predicted_ind"] = final_inds
+            
+            # Petakan index label
+            label_map = {1: "Positif", 0: "Negatif", 2: "Netral"}
+            df.loc[valid_mask, "_predicted_label"] = [label_map[idx] for idx in final_inds]
+            
+            # Hitung apakah label ter-koreksi dari prediksi ML murni (threshold 0.50)
+            ml_pure_inds = np.where(p_text >= 0.50, 1, 0)
+            df.loc[valid_mask, "_is_corrected"] = (ml_pure_inds != final_inds)
+        else:
+            # Prediksi ML murni jika tidak ada kolom rating
+            ml_pure_inds = np.where(p_text >= 0.50, 1, 0)
+            df.loc[valid_mask, "_predicted_ind"] = ml_pure_inds
+            label_map = {1: "Positif", 0: "Negatif"}
+            df.loc[valid_mask, "_predicted_label"] = [label_map[idx] for idx in ml_pure_inds]
+            df.loc[valid_mask, "_is_corrected"] = False
 
     df["_ml_mode"] = mode
     df["_ml_accuracy"] = accuracy

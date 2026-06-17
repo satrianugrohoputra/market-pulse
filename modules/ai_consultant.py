@@ -19,10 +19,28 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
+import threading
+
 _EMBEDDING_MODEL = None
+_MODEL_LOADING_THREAD = None
+
+def _load_model_async():
+    global _EMBEDDING_MODEL
+    try:
+        from sentence_transformers import SentenceTransformer
+        _EMBEDDING_MODEL = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+    except Exception:
+        pass
+
+def start_model_preloading():
+    """Mulai memuat model sentence-transformer di background thread agar tidak membekukan UI."""
+    global _MODEL_LOADING_THREAD
+    if _EMBEDDING_MODEL is None and _MODEL_LOADING_THREAD is None:
+        _MODEL_LOADING_THREAD = threading.Thread(target=_load_model_async, daemon=True)
+        _MODEL_LOADING_THREAD.start()
 
 def get_embedding_model():
-    """Lazy-load the SentenceTransformer model to save startup memory/time."""
+    """Lazy-load the SentenceTransformer model (atau menunggu jika preloading sedang berjalan)."""
     global _EMBEDDING_MODEL
     if _EMBEDDING_MODEL is None:
         from sentence_transformers import SentenceTransformer
@@ -30,43 +48,36 @@ def get_embedding_model():
     return _EMBEDDING_MODEL
 
 
-def get_dataset_embeddings(df: pd.DataFrame, text_col: str) -> np.ndarray:
-    """
-    Mengambil atau menghitung vector embeddings untuk seluruh ulasan di dataset.
-    Hasilnya disimpan dalam file cache .npy lokal agar pencarian berikutnya instan.
-    """
-    if df.empty:
-        return np.empty((0, 0))
+# Kamus terjemahan sederhana untuk memperluas pencarian TF-IDF (Indonesian -> English)
+_BILINGUAL_DICT = {
+    "kualitas": "quality",
+    "bahan": "fabric material cloth",
+    "pengiriman": "shipping delivery courier transport",
+    "lambat": "slow late delay delayed",
+    "cepat": "fast quick speed rapid",
+    "bagus": "good great excellent nice superb beautiful",
+    "jelek": "bad poor terrible worst trash",
+    "rusak": "damaged broken torn defect defective",
+    "ukuran": "size fit tight loose sizing",
+    "harga": "price cost cheap expensive",
+    "murah": "cheap inexpensive low price",
+    "mahal": "expensive pricey high price",
+    "kecewa": "disappointed angry unhappy regret",
+    "puas": "satisfied happy pleased love",
+    "kurir": "courier delivery shipping messenger",
+    "robek": "torn ripped broken hole",
+    "sempit": "tight small narrow sizing",
+    "longgar": "loose big large sizing",
+}
 
-    # Gunakan sidik jari dataframe untuk membuat hash unik
-    first_text = str(df.iloc[0].get(text_col, ''))
-    last_text = str(df.iloc[-1].get(text_col, ''))
-    length = len(df)
-    fingerprint = f"{first_text}_{last_text}_{length}"
-    df_hash = hashlib.md5(fingerprint.encode('utf-8')).hexdigest()
-
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    cache_dir = os.path.join(base_dir, "models")
-    os.makedirs(cache_dir, exist_ok=True)
-    cache_path = os.path.join(cache_dir, f"embeddings_{df_hash}.npy")
-
-    if os.path.exists(cache_path):
-        try:
-            return np.load(cache_path)
-        except Exception:
-            pass
-
-    # Hitung jika tidak ada di cache
-    model = get_embedding_model()
-    corpus = df[text_col].fillna('').astype(str).tolist()
-    embeddings = model.encode(corpus, show_progress_bar=False, convert_to_numpy=True)
-
-    try:
-        np.save(cache_path, embeddings)
-    except Exception:
-        pass
-
-    return embeddings
+def _expand_query_bilingual(query: str) -> str:
+    """Memperluas kata kunci pencarian Indonesia ke bahasa Inggris agar TF-IDF dapat mencocokkan ulasan bahasa Inggris."""
+    words = re.findall(r'[a-zA-Z\u00C0-\u024F]+', query.lower())
+    expanded = list(words)
+    for w in words:
+        if w in _BILINGUAL_DICT:
+            expanded.append(_BILINGUAL_DICT[w])
+    return " ".join(expanded)
 
 
 # ─── Konstanta ────────────────────────────────────────────────────────────────
@@ -222,47 +233,61 @@ def retrieve_relevant_reviews(
     if working_df.empty:
         return []
 
-    # Tambahkan index asli untuk memetakan vector embedding setelah filter
-    working_df['_orig_idx'] = range(len(working_df))
+    # Terapkan filter sentimen ke dataframe terlebih dahulu
+    if rating_col:
+        try:
+            working_df[rating_col] = pd.to_numeric(working_df[rating_col], errors='coerce')
+            if "Negatif" in sentiment_filter:
+                working_df = cast(pd.DataFrame, working_df[working_df[rating_col] <= 2])
+            elif "Positif" in sentiment_filter:
+                working_df = cast(pd.DataFrame, working_df[working_df[rating_col] >= 4])
+        except Exception:
+            pass
+
+    if working_df.empty:
+        return []
 
     # Cek metode pencarian
     if "Semantik" in search_method:
         try:
-            # 1. Hitung/Ambil Embedding untuk seluruh teks (sebelum difilter)
-            full_embeddings = get_dataset_embeddings(cast(pd.DataFrame, working_df), text_col)
+            # 1. Gunakan TF-IDF Cepat (Bilingual Expanded) untuk mengambil 100 kandidat teratas
+            # Ini mempersempit pencarian secara instan agar tidak membekukan CPU
+            corpus = pd.Series(working_df[text_col]).fillna('').astype(str).tolist()
             
-            # 2. Terapkan filter sentimen ke dataframe
-            if rating_col:
-                try:
-                    working_df[rating_col] = pd.to_numeric(working_df[rating_col], errors='coerce')
-                    if "Negatif" in sentiment_filter:
-                        working_df = cast(pd.DataFrame, working_df[working_df[rating_col] <= 2])
-                    elif "Positif" in sentiment_filter:
-                        working_df = cast(pd.DataFrame, working_df[working_df[rating_col] >= 4])
-                except Exception:
-                    pass
+            # Perluas query untuk pencarian dwibahasa
+            expanded_query = _expand_query_bilingual(query)
             
-            if working_df.empty:
-                return []
+            vectorizer = TfidfVectorizer(
+                max_features=5000,
+                stop_words='english',
+                ngram_range=(1, 2)
+            )
+            tfidf_matrix = vectorizer.fit_transform(corpus)
+            query_vec = vectorizer.transform([expanded_query])
+            scores_tfidf = cosine_similarity(query_vec, tfidf_matrix).flatten()
             
-            # Batasi head(5000) seperti versi legacy untuk efisiensi
-            working_df = cast(pd.DataFrame, working_df.head(5000))
+            # Ambil hingga 100 kandidat teratas
+            candidate_k = min(100, len(working_df))
+            top_candidate_indices = np.argsort(scores_tfidf)[::-1][:candidate_k]
             
-            # 3. Iris embedding untuk baris yang cocok dengan filter
-            matched_indices = working_df['_orig_idx'].tolist()
-            sliced_embeddings = full_embeddings[matched_indices]
+            # Saring dataframe ulasan kandidat
+            candidates_df = working_df.iloc[top_candidate_indices].copy()
+            candidate_corpus = pd.Series(candidates_df[text_col]).fillna('').astype(str).tolist()
             
-            # 4. Hitung Query Embedding & similarity
+            # 2. Hitung embedding menggunakan MiniLM (hanya untuk 100 kandidat + 1 query)
+            # Ini sangat cepat pada CPU (hanya perlu waktu ~2-3 detik)
             model = get_embedding_model()
-            query_vec = model.encode([query], show_progress_bar=False, convert_to_numpy=True)
+            candidate_embeddings = model.encode(candidate_corpus, show_progress_bar=False, convert_to_numpy=True)
+            query_embedding = model.encode([query], show_progress_bar=False, convert_to_numpy=True)
             
-            scores = cosine_similarity(query_vec, sliced_embeddings).flatten()
-            top_indices = np.argsort(scores)[::-1][:top_k]
+            # 3. Hitung cosine similarity semantik
+            scores_semantic = cosine_similarity(query_embedding, candidate_embeddings).flatten()
+            top_semantic_indices = np.argsort(scores_semantic)[::-1][:top_k]
             
             results = []
-            for idx in top_indices:
-                row = working_df.iloc[idx]
-                score = scores[idx]
+            for idx in top_semantic_indices:
+                row = candidates_df.iloc[idx]
+                score = scores_semantic[idx]
                 results.append({
                     "review_text": str(row.get(text_col, '')),
                     "title": str(row.get('title', row.get('_title', ''))),
@@ -276,16 +301,6 @@ def retrieve_relevant_reviews(
             pass
 
     # --- FALLBACK / LEGACY TF-IDF KEYWORD SEARCH ---
-    if rating_col:
-        try:
-            working_df[rating_col] = pd.to_numeric(working_df[rating_col], errors='coerce')
-            if "Negatif" in sentiment_filter:
-                working_df = cast(pd.DataFrame, working_df[working_df[rating_col] <= 2])
-            elif "Positif" in sentiment_filter:
-                working_df = cast(pd.DataFrame, working_df[working_df[rating_col] >= 4])
-        except Exception:
-            pass
-
     working_df = cast(pd.DataFrame, working_df.head(5000))
     if working_df.empty:
         return []
