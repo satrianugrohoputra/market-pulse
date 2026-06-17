@@ -101,16 +101,23 @@ def run_query(query):
         gp.columns = ["Age Group", "Department", "Total Purchase", "Average Rating"]
         return pd.DataFrame(gp).sort_values(by=["Age Group", "Total Purchase"], ascending=[True, False])
         
-    # 6. Populer: QUERY_PRODUK_POPULER
-    elif "total positive feedback" in q_clean:
-        gp = df_all.groupby(['class_name', 'department_name']).agg(
+    # 6. Populer: QUERY_PRODUK_POPULER (VERSI FIX TOTAL ANTI-KOSONG)
+        # Kita buat deteksinya super sensitif, kalau ada kata 'positive' atau 'feedback' atau 'populer' langsung eksekusi!
+    elif "feedback" in q_clean or "positive" in q_clean or "populer" in q_clean or "clothing_id" in q_clean:
+        # Ambil data dari cache CSV lokal
+        gp = df_all.groupby('clothing_id').agg(
             review_count=('id', 'count'),
             total_feedback=('positive_feedback_count', 'sum'),
             avg_rating=('rating', lambda x: round(x.mean(), 2)),
             rec_rate=('recommended_ind', lambda x: round(x.mean() * 100, 2))
         ).reset_index()
-        gp.columns = ["Product Category", "Department", "Review Count", "Total Positive Feedback", "Average Rating", "Recommended Rate"]
-        return pd.DataFrame(gp).sort_values(by="Total Positive Feedback", ascending=False).head(10).reset_index(drop=True)
+            
+        # Paksa susun kolomnya dengan huruf kecil semua
+        gp.columns = ["clothing_id", "review_count", "total_positive_feedback", "average_rating", "recommended_rate"]
+            
+        # Urutkan berdasarkan feedback positif terbanyak dan ambil 10 besar
+        df_final_pop = gp.sort_values(by="total_positive_feedback", ascending=False).head(10).reset_index(drop=True)
+        return df_final_pop
         
     # 7. Dinamis: QUERY_DINAMIS
     elif "ilike" in q_clean:

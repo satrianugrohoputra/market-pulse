@@ -75,15 +75,14 @@ LIMIT 15;
 # 6. Kategori Produk Paling Populer Berdasarkan Positive Feedback
 QUERY_PRODUK_POPULER = """
 SELECT 
-    r.class_name as "Product Category",
-    r.department_name as "Department",
-    count(*) as "Review Count",
-    sum(r.positive_feedback_count) as "Total Positive Feedback",
-    round(avg(r.rating), 2) as "Average Rating",
-    round(avg(r.recommended_ind) * 100, 2) as "Recommended Rate"
+    r.clothing_id::VARCHAR as "clothing_id",
+    count(*) as "review_count",
+    sum(r.positive_feedback_count) as "total_positive_feedback",
+    round(avg(r.rating), 2) as "average_rating",
+    round(avg(r.recommended_ind) * 100, 2) as "recommended_rate"
 FROM reviews r 
-WHERE r.class_name IS NOT NULL
-GROUP BY r.class_name, r.department_name 
-ORDER BY "Total Positive Feedback" DESC
+WHERE r.clothing_id IS NOT NULL
+GROUP BY r.clothing_id 
+ORDER BY "total_positive_feedback" DESC
 LIMIT 10;
 """
