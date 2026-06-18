@@ -1,11 +1,17 @@
 import streamlit as st
 import plotly.express as px
 import pandas as pd
-import modules.database as db
-import modules.queries as q
-import modules.ai_consultant as aic
-import modules.upload_processor as up
-import modules.ml_pipeline as mlp
+import re
+import os
+import pickle
+from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
+
+# Import modul lokal kelompok dari folder 'modules'
+from modules import database as db
+from modules import queries as q
+from modules import ai_consultant as aic
+from modules import upload_processor as up
+from modules import ml_pipeline as mlp
 
 # Memulai preloading model sentence-transformer di background thread agar UI responsif
 aic.start_model_preloading()
@@ -22,7 +28,7 @@ with st.sidebar:
     menu = st.radio(
         "Pilih Halaman:",
         options=[
-            "📈 Ringkasan Analytics",
+            "📈 Ringkasan Analisis",
             "⚠️ Analisis Komplain & Pasar",
             "🔍 Pencarian Ulasan Dinamis",
             "🔮 Simulator & Evaluator AI"
@@ -37,7 +43,7 @@ with st.sidebar:
     # ==================== SIDEBAR: UPLOAD DATASET BARU ====================
     with st.expander("📤 Upload Dataset Baru  ▶", expanded=False):
         st.markdown("**Unggah file ulasan Anda sendiri** untuk dianalisis sentimennya secara otomatis.")
-        st.caption("Format: `.csv` atau `.xlsx` | Maks: 50 MB | Min: 100 baris")
+        st.caption("Format: `.csv` or `.xlsx` | Maks: 50 MB | Min: 100 baris")
 
         uploaded_file = st.file_uploader(
             label="Pilih file dataset:",
@@ -47,10 +53,9 @@ with st.sidebar:
         )
 
         if uploaded_file is not None:
-            # Simpan info file ke session agar Section 5 bisa membacanya
             if st.session_state.get("_last_uploaded_name") != uploaded_file.name:
                 st.session_state["_last_uploaded_name"] = uploaded_file.name
-                st.session_state["_upload_result"] = None  # Reset hasil lama
+                st.session_state["_upload_result"] = None
 
             st.info(f"📄 File dipilih: **{uploaded_file.name}** ({uploaded_file.size / 1024:.1f} KB)")
             st.session_state["_uploaded_file"] = uploaded_file
@@ -60,7 +65,6 @@ with st.sidebar:
                     result = up.process_upload(uploaded_file)
                 st.session_state["_upload_result"] = result
 
-            # Tampilkan status validasi ringkas di sidebar
             result = st.session_state.get("_upload_result")
             if result is not None:
                 if not result["ok"]:
@@ -72,27 +76,51 @@ with st.sidebar:
                         f"- Kolom Ulasan: `{result['text_col']}`\n"
                         f"- Kolom Rating: `{result['rating_col'] or 'Tidak ditemukan'}`"
                     )
-                    st.caption("Lihat halaman **🔮 Simulator & Evaluator AI** untuk analisis sentimen dataset Anda.")
+                    st.caption("Lihat halaman **🔮 Simulator & Evaluator AI** untuk melihat hasil detil.")
 
-# ==================== MAIN PAGE NAVIGATION ====================
-
-if menu == "📈 Ringkasan Analytics":
-    # ==================== HALAMAN UTAMA: HEADER ====================
-    st.title("📊 Market-Pulse: E-commerce Analytics")
-    st.markdown("Pusat Kendali Analisis Tren, Segmentasi Pasar, dan Sentimen Produk Toko Anda")
     st.write("---")
+    st.markdown("Developed by Kelompok 2")
+    st.markdown("🎓 *Celerates Independent Study 2026*")
 
-    # ==================== BARIS 1: METRIC CARDS (RINGKASAN CEPAT) ====================
-    df_total = db.run_query("SELECT COUNT(*) as total FROM reviews;")
-    total_all_reviews = df_total["total"][0] if not df_total.empty else 0
 
+# ==================== HALAMAN UTAMA: HEADER GLOBAL ====================
+st.title("📊 Market-Pulse: E-commerce Analytics")
+st.markdown("Pusat Kendali Analisis Tren, Segmentasi Pasar, dan Sentimen Produk Toko Anda")
+st.write("---")
+
+
+# ==================== MENU 1: DASHBOARD UMUM (RINGKASAN ANALYTICS) ====================
+if menu == "📈 Ringkasan Analisis":
+    # ── 🛠️ DETEKTOR SUMBER DATA DINAMIS ──
+    _upload_result = st.session_state.get("_upload_result")
+    is_user_data = _upload_result is not None and _upload_result["ok"]
+    
+    if is_user_data:
+        # JALUR A: Jika user mengunggah dataset baru
+        df_aktif_h1 = _upload_result["df"]
+        total_all_reviews = len(df_aktif_h1)
+        sumber_data_label = "📂 Dataset Anda"
+    else:
+        # JALUR B: Jika kosong, ambil dari database PostgreSQL bawaan toko
+        df_total = db.run_query("SELECT COUNT(*) as total FROM reviews;")
+        total_all_reviews = df_total["total"][0] if not df_total.empty else 0
+        sumber_data_label = "🗄️ Database Default"
+        # 💡 KUNCI PENYELAMAT: Amankan df_aktif_h1 agar variabelnya TETAP ADA dan tidak melempar NameError
+        df_aktif_h1 = db.run_query(q.QUERY_PRODUK_POPULER) 
+
+    # ==================== BARIS 1: METRIC CARDS ====================
     col_m1, col_m2, col_m3 = st.columns(3)
     with col_m1:
         st.metric(label="📈 Total Volume Ulasan", value=f"{total_all_reviews:,} Data")
     with col_m2:
-        st.metric(label="⭐ Target Kepuasan Produk", value="4.20 / 5.00")
+        # Menghitung target kepuasan secara dinamis jika ada kolom rating
+        if is_user_data and "_rating" in df_aktif_h1.columns:
+            avg_rating_user = df_aktif_h1["_rating"].mean()
+            st.metric(label="⭐ Rata-rata Rating Dataset", value=f"{avg_rating_user:.2f} / 5.00")
+        else:
+            st.metric(label="⭐ Target Kepuasan Produk", value="4.20 / 5.00")
     with col_m3:
-        st.metric(label="🚀 Status Sistem AI", value="Ready")
+        st.metric(label="🚀 Sumber Data Utama", value=sumber_data_label)
 
     st.write("---")
 
@@ -100,112 +128,320 @@ if menu == "📈 Ringkasan Analytics":
     col_pop1, col_pop2 = st.columns([2, 1])
 
     with col_pop1:
-        st.subheader("🔥 Top 10 Kategori Produk Populer (Banyak Di-upvote Pelanggan)")
-        df_populer = db.run_query(q.QUERY_PRODUK_POPULER)
+        st.subheader("🔥 Top 10 Produk Populer (Paling Banyak Diminati)")
         
+        if is_user_data:
+            df_populer = df_aktif_h1.copy()
+        else:
+            df_populer = db.run_query(q.QUERY_PRODUK_POPULER)
+
         if not df_populer.empty:
-            if "Product Category" in df_populer.columns:
-                sumbu_x = "Product Category"
-                label_x = "Kategori Produk"
-            elif "Clothing ID" in df_populer.columns:
-                df_populer["Clothing ID"] = df_populer["Clothing ID"].astype(str)
-                sumbu_x = "Clothing ID"
-                label_x = "ID Produk"
-            else:
-                sumbu_x = str(df_populer.columns[0])
-                label_x = str(df_populer.columns[0])
+            # 🔍 STRATEGI PRIORITAS SUMBU X (Nama Produk > ID Produk)
+            sumbu_x = None
+            label_x = "ID Produk"
+
+            for col in df_populer.columns:
+                if "name" in str(col).lower() or "nama" in str(col).lower():
+                    sumbu_x = col
+                    label_x = "Nama Produk"
+                    break
             
-            fig_pop = px.bar(df_populer, 
+            if not sumbu_x:
+                for col in df_populer.columns:
+                    if "id" in str(col).lower() or "clothing" in str(col).lower() or "prod" in str(col).lower():
+                        sumbu_x = col
+                        label_x = "ID Produk"
+                        break
+
+            if not sumbu_x:
+                sumbu_x = df_populer.columns[0]
+                label_x = "Produk"
+            
+            df_populer[sumbu_x] = df_populer[sumbu_x].astype(str)
+
+            sumbu_y = None
+            label_y = "Volume Interaksi"
+
+            for col in df_populer.columns:
+                if any(k in str(col).lower() for k in ["reviews", "positive_feedback", "positive"]):
+                    sumbu_y = col
+                    label_y = "Jumlah Terjual"
+                    break
+            
+            if not sumbu_y:
+                for col in df_populer.columns:
+                    if any(k in str(col).lower() for k in ["reviews", "review_count", "ulasan", "count"]):
+                        sumbu_y = col
+                        label_y = "Jumlah Terjual"
+                        break
+
+            # Pilihan terakhir jika semua buntu
+            if not sumbu_y:
+                sumbu_y = df_populer.columns[1] if len(df_populer.columns) > 1 else df_populer.columns[-1]
+
+            # 🔍 DETEKSI SKALA WARNA (Rating / Harga)
+            skala_warna = None
+            for col in df_populer.columns:
+                if any(k in str(col).lower() for k in ["rating", "avg", "score"]):
+                    skala_warna = col
+                    break
+            if not skala_warna:
+                skala_warna = sumbu_y
+
+            # 🚀 PROSES AGREGASI AGAR GRAFIK TIDAK DUPLIKAT (On-The-Fly Pandas)
+            if is_user_data:
+                # Ambil tipe agregasi yang aman berdasarkan nama kolom
+                agg_dict = {sumbu_y: "sum"}
+                if skala_warna in df_populer.columns and skala_warna != sumbu_y:
+                    agg_dict[skala_warna] = "mean"
+                
+                df_chart_pop = df_populer.groupby(sumbu_x).agg(agg_dict).reset_index()
+                df_chart_pop = df_chart_pop.sort_values(by=sumbu_y, ascending=False).head(10)
+            else:
+                df_chart_pop = df_populer
+
+            # Gambar grafik batang dengan label dinamis hasil pemikiran Nashwan
+            fig_pop = px.bar(df_chart_pop, 
                              x=sumbu_x, 
-                             y="Total Positive Feedback",
-                             text="Total Positive Feedback", 
-                             color="Average Rating",
-                             labels={str(sumbu_x): label_x, "Total Positive Feedback": "Total Upvote (Helpful)"},
-                             title="Kategori Produk Paling Banyak Mendapat Interaksi Positif",
+                             y=sumbu_y, 
+                             text=sumbu_y, 
+                             color=skala_warna, 
+                             labels={sumbu_x: label_x, sumbu_y: label_y},
+                             title=f"10 {label_x} Teratas Berdasarkan {label_y}",
                              color_continuous_scale=px.colors.sequential.Viridis)
             
             fig_pop.update_layout(xaxis={'type': 'category', 'categoryorder': 'total descending'})
             st.plotly_chart(fig_pop, use_container_width=True)
         else:
-            st.info("Tidak ada data popularitas produk untuk ditampilkan.")
+            st.info("Belum ada data ulasan produk populer untuk ditampilkan.")
 
     with col_pop2:
         st.subheader("🎯 Loyalitas per Departemen")
-        df_loyal = db.run_query(q.QUERY_LOYALITAS_PELANGGAN)
-        fig_loyal = px.pie(df_loyal, values="Total Reviews", names="Department", hole=0.4, title="Distribusi Volume Ulasan")
-        st.plotly_chart(fig_loyal, use_container_width=True)
+        
+        if is_user_data:
+            df_loyal = df_aktif_h1.copy()
+        else:
+            df_loyal = db.run_query(q.QUERY_LOYALITAS_PELANGGAN)
+        
+        if not df_loyal.empty:
+            # Cari kolom klasifikasi kategori/departemen
+            n_col = None
+            for col in df_loyal.columns:
+                if any(k in str(col).lower() for k in ["department", "departemen", "brand", "category", "kategori", "class"]):
+                    n_col = col
+                    break
+            
+            if n_col:
+                # Amankan pencarian kolom value secara super fleksibel (mendukung huruf besar, kecil, spasi)
+                v_col = None
+                for col in df_loyal.columns:
+                    if any(k in str(col).lower() for k in ["count", "reviews", "review", "total", "feedback"]):
+                        if col != n_col: # Jangan sampai sama dengan kolom nama
+                            v_col = col
+                            break
+                
+                if is_user_data:
+                    df_chart_loyal = df_loyal.groupby(n_col).size().reset_index(name="Total Reviews")
+                    v_col = "Total Reviews"
+                else:
+                    df_chart_loyal = df_loyal
+                    if not v_col:
+                        v_col = df_loyal.columns[1] if len(df_loyal.columns) > 1 else df_loyal.columns[-1]
 
+                fig_loyal = px.pie(df_chart_loyal, values=v_col, names=n_col, hole=0.4, title="Distribusi Volume Ulasan")
+                fig_loyal.update_layout(
+                    margin=dict(l=10, r=10, t=30, b=10),
+                    height=350,
+                    showlegend=True,
+                    legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5)
+                )
+                st.plotly_chart(fig_loyal, use_container_width=True)
+            else:
+                st.info("ℹ️ Data **Kategori Sektoral/Departemen** tidak ditemukan dalam dataset ini.")
+        else:
+            st.info("Belum ada data departemen.")
+
+# ==================== MENU 2: ANALISIS KOMPLAIN & PASAR ====================
 elif menu == "⚠️ Analisis Komplain & Pasar":
     st.title("⚠️ Analisis Komplain & Pasar")
     st.markdown("Identifikasi area masalah dan segmentasi pasar toko Anda.")
     st.write("---")
 
-    # ==================== BARIS 3: SEGMENTASI PASAR & KELUHAN ====================
+    _upload_result = st.session_state.get("_upload_result")
+    is_user_data = _upload_result is not None and _upload_result["ok"]
+    
+    if is_user_data:
+        df_aktif = _upload_result["df"]
+    else:
+        df_aktif = db.run_query(q.QUERY_SEGMENTASI_PASAR)
+
     col1, col2 = st.columns(2)
 
     with col1:
-        st.subheader("👥 Karakteristik Pasar Berdasarkan Usia & Departemen")
-        df_pasar = db.run_query(q.QUERY_SEGMENTASI_PASAR)
-        fig_pasar = px.bar(df_pasar, x="Age Group", y="Total Purchase", color="Department", barmode="group", title="Volume Pembelian Berdasarkan Generasi Usia")
-        st.plotly_chart(fig_pasar, use_container_width=True)
+        st.subheader("👥 Karakteristik Pasar Berdasarkan Generasi Usia")
+        
+        if not df_aktif.empty and any(k in "".join(df_aktif.columns).lower() for k in ["age", "usia"]):
+            # Skenario jika data default database
+            if not is_user_data:
+                x_col = "age_group" if "age_group" in df_aktif.columns else "Age Group"
+                y_col = "total_purchase" if "total_purchase" in df_aktif.columns else "Total Purchase"
+                c_col = "department" if "department" in df_aktif.columns else "Department"
+                df_chart_pasar = df_aktif
+            else:
+                # Skenario hitung on-the-fly dari file upload user
+                age_col = [c for c in df_aktif.columns if "age" in c.lower() or "usia" in c.lower()][0]
+                dept_col = [c for c in df_aktif.columns if any(k in c.lower() for k in ["dept", "brand", "cat"])][0] if any(any(k in c.lower() for k in ["dept", "brand", "cat"]) for c in df_aktif.columns) else df_aktif.columns[0]
+                
+                df_aktif['Age Group'] = df_aktif[age_col].apply(lambda age: 'Gen Z' if age < 30 else ('Milenial' if 30 <= age <= 45 else 'Gen X/Boomers'))
+                df_chart_pasar = df_aktif.groupby(['Age Group', dept_col]).size().reset_index(name="Total Purchase")
+                x_col, y_col, c_col = 'Age Group', 'Total Purchase', dept_col
+
+            fig_pasar = px.bar(df_chart_pasar, x=x_col, y=y_col, color=c_col, barmode="group", 
+                               labels={x_col: "Generasi Usia", y_col: "Volume Pembelian", c_col: "Departemen"},
+                               title="Volume Pembelian Berdasarkan Generasi Usia")
+            st.plotly_chart(fig_pasar, use_container_width=True)
+        else:
+            st.info("ℹ️ Data **Usia Pelanggan** tidak ditemukan dalam dataset ini untuk menghasilkan analisis karakteristik pasar.")
 
     with col2:
-        st.subheader("⚠️ Titik Masalah: Ulasan Negatif per Kategori")
-        df_keluhan = db.run_query(q.QUERY_KELUHAN_PRODUK)
-        fig_keluhan = px.bar(df_keluhan, 
-                             x="Class", 
-                             y="Defect Rate",
-                             text="Negative Reviews", 
-                             color="Defect Rate",
-                             hover_data={"Division": True, "Department": True, "Class": True, "Defect Rate": ":.2f"},
-                             labels={"Defect Rate": "Rasio Cacat (%)", "Class": "Kategori Kelas"},
-                             title="Kategori dengan Komplain > 10 Ulasan (Label: Jumlah Komplain)",
-                             color_continuous_scale=px.colors.sequential.OrRd)
+        st.subheader("⚠️ Titik Masalah: Komplain Produk Terbanyak")
         
-        fig_keluhan.update_layout(xaxis_categoryorder='total descending')
-        st.plotly_chart(fig_keluhan, use_container_width=True)
+        if is_user_data:
+            df_keluhan = df_aktif.copy()
+        else:
+            df_keluhan = db.run_query(q.QUERY_KELUHAN_PRODUK)
+    
+        if not df_keluhan.empty:
+            # 🔍 STRATEGI BUNGLON DASHBOARD: Tentukan Sumbu X secara cerdas
+            if "class" in df_keluhan.columns or "Class" in df_keluhan.columns:
+                sumbu_x_keluhan = "class" if "class" in df_keluhan.columns else "Class"
+                sumbu_y_keluhan = "defect_rate" if "defect_rate" in df_keluhan.columns else "Defect Rate"
+                df_chart_keluhan = df_keluhan
+                label_x_keluhan = "Kategori Kelas"
+                title_keluhan = "Kategori Kelas dengan Komplain Terbanyak"
+            else:
+                # Skenario adaptif: Cari kolom ID barang atau nama barang
+                id_col = [c for c in df_keluhan.columns if any(k in c.lower() for k in ["id", "prod", "item"])][0] if any(any(k in c.lower() for k in ["id", "prod", "item"]) for c in df_keluhan.columns) else df_keluhan.columns[0]
+                rat_col = "_rating" if "_rating" in df_keluhan.columns else ([c for c in df_keluhan.columns if "rat" in c.lower()][0] if any("rat" in c.lower() for c in df_keluhan.columns) else df_keluhan.columns[1])
+                
+                # Hitung ulasan negatif (Rating <= 2) jika offline user data
+                if is_user_data:
+                    df_neg = df_keluhan[df_keluhan[rat_col] <= 2]
+                    df_chart_keluhan = df_neg.groupby(id_col).size().reset_index(name="Negative Reviews").sort_values("Negative Reviews", ascending=False).head(10)
+                    sumbu_y_keluhan = "Negative Reviews"
+                else:
+                    df_chart_keluhan = df_keluhan
+                    sumbu_y_keluhan = "negative_reviews" if "negative_reviews" in df_keluhan.columns else df_keluhan.columns[1]
 
+                df_chart_keluhan[id_col] = df_chart_keluhan[id_col].astype(str)
+                sumbu_x_keluhan = id_col
+                label_x_keluhan = "ID/Nama Produk"
+                title_keluhan = "Top 10 Komoditas Produk dengan Keluhan Ulasan Negatif Terbanyak"
+
+            fig_keluhan = px.bar(df_chart_keluhan, x=sumbu_x_keluhan, y=sumbu_y_keluhan, text=sumbu_y_keluhan, color=sumbu_y_keluhan,
+                                 labels={sumbu_y_keluhan: "Jumlah Komplain", sumbu_x_keluhan: label_x_keluhan},
+                                 title=title_keluhan, color_continuous_scale=px.colors.sequential.OrRd)
+            fig_keluhan.update_layout(xaxis_categoryorder='total descending')
+            st.plotly_chart(fig_keluhan, use_container_width=True)
+        else:
+            st.info("Tidak ada data keluhan komplain untuk ditampilkan.")
+
+# ==================== MENU 3: PENCARIAN ULASAN DINAMIS ====================
 elif menu == "🔍 Pencarian Ulasan Dinamis":
-    st.title("🔍 Pencarian Ulasan Dinamis")
-    st.markdown("Cari ulasan pelanggan berdasarkan kata kunci dan rating.")
+    st.title("🔍 Mesin Pencari & Penyaring Ulasan Pelanggan")
+    st.markdown("Fitur interaktif untuk menyaring curhatan pelanggan berdasarkan kata kunci dan rating secara dinamis.")
     st.write("---")
 
-    # ==================== BARIS 4: FITUR FILTER KATA KUNCI DINAMIS ====================
-    st.subheader("🔍 Mesin Pencari & Penyaring Ulasan Pelanggan")
-    st.markdown("Fitur interaktif untuk menyaring curhatan pelanggan berdasarkan kata kunci dan rating.")
+    # Deteksi status upload data user
+    _upload_result = st.session_state.get("_upload_result")
+    is_user_data = _upload_result is not None and _upload_result["ok"]
 
+    # ── PANEL INPUT SEBAGAI FILTER UTAMA ──
     col_f1, col_f2 = st.columns(2)
     with col_f1:
-        kata_kunci = st.text_input("Ketik Kata Kunci yang Dicari (Contoh: love, perfect, fabric, size):", "perfect")
+        kata_kunci = st.text_input("Ketik Kata Kunci yang Dicari (Contoh: love, perfect, bad, quality, size):", "perfect")
     with col_f2:
         pilihan_rating = st.selectbox("Pilih Rating Ulasan Pelanggan:", [5, 4, 3, 2, 1], index=0)
 
-    QUERY_DINAMIS = f"""
-    SELECT 
-        division_name AS "Division", 
-        department_name AS "Department", 
-        class_name AS "Class", 
-        title AS "Review Title", 
-        review_text AS "Review Text", 
-        rating AS "Rating"
-    FROM reviews
-    WHERE (title ILIKE '%%{kata_kunci}%%' OR review_text ILIKE '%%{kata_kunci}%%') 
-      AND rating = {pilihan_rating}
-    LIMIT 10;
-    """
-    df_dinamis = db.run_query(QUERY_DINAMIS)
+# ── PROSES PENGAMBILAN DATA (DUAL-SOURCE DINAMIS) ──
+    if is_user_data:
+        # JALUR A: Cari langsung di memori Dataframe hasil upload user (Versi Fixed Kolom Description)
+        df_mentah_h3 = _upload_result["df"].copy()
+        
+        # 🔍 DETEKSI KOLOM TEKS ULTRA-CERDAS (Mendukung 'Description' milik Adidas/Nike)
+        user_txt_col = None
+        for col in df_mentah_h3.columns:
+            if any(k in str(col).lower() for k in ["review", "text", "ulasan", "desc", "content", "comment"]):
+                user_txt_col = col
+                break
+        if not user_txt_col:
+            user_txt_col = df_mentah_h3.columns[0] # Fallback darurat ke kolom pertama jika buntu
 
+        # 🔍 DETEKSI KOLOM RATING ULTRA-CERDAS
+        user_rat_col = None
+        for col in df_mentah_h3.columns:
+            if any(k in str(col).lower() for k in ["rat", "bintang", "score"]):
+                user_rat_col = col
+                break
+        if not user_rat_col:
+            user_rat_col = df_mentah_h3.columns[1]
+
+        # Jalankan filter pencarian teks secara case-insensitive (huruf besar kecil disamakan)
+        mask_keyword = df_mentah_h3[user_txt_col].fillna("").str.lower().str.contains(kata_kunci.lower(), na=False)
+        mask_rating = df_mentah_h3[user_rat_col] == pilihan_rating
+        
+        # Ambil maksimal 5 baris teratas saja sesuai reques dari Nashwan!
+        df_dinamis = df_mentah_h3[mask_keyword & mask_rating].head(5)
+        
+        # Bersihkan kolom-kolom internal sistem agar tidak merusak PyArrow
+        for internal_col in ["_review_text", "_rating", "_cleaned_text", "_predicted_label", "_predicted_ind", "_is_corrected"]:
+            if internal_col in df_dinamis.columns:
+                df_dinamis = df_dinamis.drop(columns=[internal_col])
+    else:
+        # JALUR B: Fallback ke Database Default SQL jika user belum upload apa pun
+        QUERY_DINAMIS = f"""
+        SELECT 
+            division_name AS "Division", 
+            department_name AS "Department", 
+            class_name AS "Class", 
+            title AS "Review Title", 
+            review_text AS "Review Text", 
+            rating AS "Rating"
+        FROM reviews
+        WHERE (title ILIKE '%%{kata_kunci}%%' OR review_text ILIKE '%%{kata_kunci}%%') 
+          AND rating = {pilihan_rating}
+        LIMIT 5; -- Kita ganti LIMIT jadi 5 juga biar adil dengan versi upload!
+        """
+        df_dinamis = db.run_query(QUERY_DINAMIS)
+
+    # ── TAMPILKAN HASILNYA KE LAYAR ──
+    st.markdown(f"#### 📋 Hasil Penyaringan 5 Ulasan Teratas (Rating {pilihan_rating})")
     if not df_dinamis.empty:
         st.dataframe(df_dinamis, use_container_width=True, hide_index=True)
     else:
-        st.info(f"Tidak ada ulasan dengan kata kunci '{kata_kunci}' pada Rating {pilihan_rating}.")
+        # 💡 PESAN INFO SESUAI NIAT SAKTI NASHWAN
+        st.info(f"ℹ️ Tidak ada ulasan yang mengandung kata kunci '{kata_kunci}' pada Rating {pilihan_rating} di dataset ini.")
 
     st.write("---")
 
-    # ==================== BARIS 5: TABEL DETAIL EFEKTIVITAS ULASAN ====================
-    st.subheader("💡 Efektivitas Ulasan Ekstrem Berdasarkan Rating")
-    df_efektif = db.run_query(q.QUERY_EFEKTIVITAS_ULASAN)
-    st.dataframe(df_efektif, use_container_width=True)
+    # ── BAGIAN SUB-TABEL BAWAH: EFEKTIVITAS ULASAN (HANYA UNTUK DATASET DEFAULT/SINKRON) ──
+    st.subheader("💡 Efektivitas Ulasan Ekstrem Berdasarkan Kategori")
+    
+    if is_user_data:
+        # Jika dataset luar, hitung statistik sederhana dari data user agar halaman bawah tidak kosong hantu
+        df_user_full = _upload_result["df"]
+        user_txt_col = "_review_text" if "_review_text" in df_user_full.columns else [c for c in df_user_full.columns if "review" in c.lower() or "text" in c.lower()][0]
+        user_rat_col = "_rating" if "_rating" in df_user_full.columns else [c for c in df_user_full.columns if "rat" in c.lower()][0]
+        
+        # Hitung ringkasan performa dataset user on-the-fly
+        st.caption("Analisis statistik performa kepuasan kata kunci bermasalah pada dataset Anda:")
+        df_efektif_user = df_user_full.groupby(user_rat_col).size().reset_index(name="Jumlah Ulasan")
+        st.dataframe(df_efektif_user.rename(columns={user_rat_col: "Rating Bintang"}), use_container_width=True, hide_index=True)
+    else:
+        # Jika default, panggil query bawaan asli milik kelompok
+        df_efektif = db.run_query(q.QUERY_EFEKTIVITAS_ULASAN)
+        if not df_efektif.empty:
+            st.dataframe(df_efektif, use_container_width=True, hide_index=True)
 
 elif menu == "🔮 Simulator & Evaluator AI":
     st.title("🔮 Pusat Kendali Kecerdasan Buatan (AI Modules)")
@@ -739,6 +975,9 @@ elif menu == "🔮 Simulator & Evaluator AI":
     _has_uploaded = st.session_state.get("_upload_result") is not None and st.session_state["_upload_result"].get("ok")
     _uploaded_fname = st.session_state.get("_last_uploaded_name", "dataset yang diunggah")
 
+    search_method = st.selectbox("🔍 Metode Pencarian:", options=["Pencarian Kata Kunci (TF-IDF)", "Pencarian Semantik (MiniLM)"], index=0, key="rag_search_method")
+    
+    # Penentuan sumber data berdasarkan status upload user
     if _has_uploaded:
         rag_data_source = st.radio(
             "📁 **Sumber Data untuk AI Consultant:**",
@@ -798,8 +1037,10 @@ elif menu == "🔮 Simulator & Evaluator AI":
 
     st.caption(f"🔧 Model aktif: `{selected_model_id}` | Akan menganalisis hingga **{aic.RAG_TOP_K} ulasan** paling relevan dari dataset.")
 
+    st.caption(f"🔧 Model aktif: `{selected_model_id}` | Menganalisis hingga **{aic.RAG_TOP_K} ulasan** paling relevan.")
+
     if st.button("✨ Generate Insight", type="primary", use_container_width=True, key="btn_gemini_run"):
-        if not ai_query.strip():
+        if not ai_query.strip(): 
             st.warning("⚠️ Silakan tulis pertanyaan bisnis Anda terlebih dahulu.")
         elif not api_key:
             st.error("🔑 API Key tidak ditemukan. Pastikan file `.streamlit/secrets.toml` berisi `GEMINI_API_KEY` yang valid.")
@@ -825,7 +1066,7 @@ elif menu == "🔮 Simulator & Evaluator AI":
                     dataset_name=dataset_name,
                 )
 
-            # ── Cek: Apakah query diblokir Pre-flight Guardrail? ────────────────────
+# ── Cek: Apakah query diblokir Pre-flight Guardrail? ────────────────────
             if result.get("blocked"):
                 st.markdown("---")
                 st.error(result["block_reason"])
@@ -842,25 +1083,22 @@ elif menu == "🔮 Simulator & Evaluator AI":
                 used_dataset = result.get("dataset_name", "")
                 used_method = result.get("search_method", "TF-IDF")
 
-                # ── Status Grounding Badge ───────────────────────────────────
                 st.markdown("---")
-                st.caption(f"🗂️ Sumber data RAG: **{used_dataset}** | Metode: **{used_method}** | Filter: **{sentiment_filter}** | Model: `{selected_model_id}`")
-                badge_col1, badge_col2, badge_col3 = st.columns(3)
-                with badge_col1:
+                st.caption(f"🗂️ Sumber data RAG: **{used_dataset}** | Metode: **{used_method}**")
+                
+                b_c1, b_c2, b_c3 = st.columns(3)
+                with b_c1: 
                     st.metric("📄 Ulasan Dianalisis (RAG)", f"{retrieved_count} ulasan")
-                with badge_col2:
-                    score_pct = f"{grounding_score * 100:.1f}%"
-                    st.metric("🛡️ Grounding Score", score_pct, help="Seberapa besar laporan ini bersumber dari data ulasan Anda.")
-                with badge_col3:
-                    if guard["grounded"]:
+                with b_c2: 
+                    st.metric("🛡️ Grounding Score", f"{grounding_score * 100:.1f}%")
+                with b_c3:
+                    if guard["grounded"]: 
                         st.success("✅ **Grounded in Data**")
-                    else:
+                    else: 
                         st.warning("⚠️ **Jawaban Umum / Kurang Data**")
 
-                # ── Tampilkan Hallucination Warning Jika Perlu ────────────────────
-                if not guard["grounded"] and guard["warning"]:
+                if not guard["grounded"] and guard["warning"]: 
                     st.warning(guard["warning"])
-
-                # ── Tampilkan Laporan Gemini ─────────────────────────────────
+                    
                 st.markdown("### 📋 Laporan AI Business Insight")
                 st.markdown(report)
