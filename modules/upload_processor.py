@@ -3,6 +3,15 @@ upload_processor.py
 ===================
 Modul untuk memvalidasi, mendeteksi kolom, dan membersihkan dataset
 yang diunggah oleh user melalui fitur Dynamic Multi-Dataset Upload.
+
+Perubahan v2:
+- TEXT_COLUMN_KEYWORDS diperluas dengan 'description', 'desc', 'detail', dll.
+  agar dataset produk seperti adidasvsnike.csv dapat terdeteksi.
+- Fallback column detection (cari kolom string terpanjang) ditambahkan.
+- Deduplication diubah dari drop_duplicates(subset=[teks]) menjadi drop_duplicates()
+  (seluruh kolom), sehingga produk berbeda dengan deskripsi identik (varian) tetap ada.
+- MIN_ROWS diturunkan dari 100 menjadi 50 untuk toleransi dataset kecil.
+- Rating normalisasi: terima rating 0-10, normalisasi ke 1-5 jika maks > 5.
 """
 
 import re
@@ -11,10 +20,18 @@ import pandas as pd
 
 # ─── Konstanta Deteksi Kolom ──────────────────────────────────────────────────
 
-# Kata kunci untuk mencari kolom teks ulasan (case-insensitive)
+# Kata kunci untuk mencari kolom teks ulasan (case-insensitive) — DIPERLUAS
+# Urutan penting: kata kunci di awal = prioritas lebih tinggi
 TEXT_COLUMN_KEYWORDS = [
-    "review", "text", "comment", "ulasan", "komentar",
-    "feedback", "isi", "deskripsi", "pesan", "pendapat", "content"
+    # Kata kunci review/ulasan langsung (prioritas tertinggi)
+    "review_text", "review text", "review",
+    "ulasan", "komentar", "feedback",
+    # Kata kunci deskripsi produk (adidasvsnike, dataset produk)
+    "description", "desc", "deskripsi",
+    # Kata kunci generik teks
+    "text", "comment", "content", "detail", "body",
+    "message", "opinion", "notes", "keterangan", "narasi",
+    "isi", "pesan", "pendapat",
 ]
 
 # Kata kunci untuk mencari kolom rating/bintang
@@ -26,7 +43,7 @@ RATING_COLUMN_KEYWORDS = [
 # Batas maksimum dataset
 MAX_FILE_SIZE_MB = 50
 MAX_ROWS = 30_000
-MIN_ROWS = 100  # Dataset di bawah ini akan ditolak
+MIN_ROWS = 50  # Diturunkan agar dataset produk kecil tetap dapat dianalisis
 
 
 # ─── Fungsi: Validasi File ────────────────────────────────────────────────────
@@ -36,7 +53,6 @@ def validate_file(uploaded_file) -> dict:
     Memeriksa ekstensi dan ukuran file yang diunggah.
     Returns: dict { "ok": bool, "error": str | None }
     """
-    # Cek ekstensi
     filename = uploaded_file.name.lower()
     if not (filename.endswith(".csv") or filename.endswith(".xlsx")):
         return {
@@ -47,7 +63,6 @@ def validate_file(uploaded_file) -> dict:
             )
         }
 
-    # Cek ukuran (dalam byte → MB)
     file_size_mb = uploaded_file.size / (1024 * 1024)
     if file_size_mb > MAX_FILE_SIZE_MB:
         return {
@@ -70,7 +85,6 @@ def read_file_to_df(uploaded_file) -> pd.DataFrame:
     filename = uploaded_file.name.lower()
     try:
         if filename.endswith(".csv"):
-            # Coba berbagai encoding agar tidak crash untuk file UTF-8 atau Latin
             for enc in ["utf-8", "utf-8-sig", "latin1", "cp1252"]:
                 try:
                     uploaded_file.seek(0)
@@ -92,8 +106,10 @@ def read_file_to_df(uploaded_file) -> pd.DataFrame:
 
 def detect_columns(df: pd.DataFrame) -> dict:
     """
-    Mendeteksi kolom teks ulasan dan kolom rating secara otomatis
-    berdasarkan daftar kata kunci yang telah didefinisikan.
+    Mendeteksi kolom teks ulasan dan kolom rating secara otomatis.
+    Menggunakan dua tahap:
+      1. Pencocokan kata kunci (prioritas)
+      2. Fallback: kolom dengan rata-rata panjang string tertinggi
 
     Returns: dict {
         "text_col": str | None,
@@ -107,16 +123,43 @@ def detect_columns(df: pd.DataFrame) -> dict:
     text_col = None
     rating_col = None
 
-    # Cari kolom teks ulasan
+    # ── Tahap 1: Pencocokan kata kunci ──────────────────────────────────────
     for keyword in TEXT_COLUMN_KEYWORDS:
         for col_lower, col_original in cols_lower.items():
             if keyword in col_lower:
-                text_col = col_original
-                break
+                # Validasi: kolom harus berisi teks cukup panjang (bukan nilai numerik)
+                try:
+                    sample_vals = df[col_original].dropna().astype(str)
+                    avg_len = sample_vals.str.len().mean() if len(sample_vals) > 0 else 0
+                    if avg_len >= 10:
+                        text_col = col_original
+                        break
+                except Exception:
+                    continue
         if text_col:
             break
 
-    # Cari kolom rating
+    # ── Tahap 2: Fallback — cari kolom string terpanjang ─────────────────────
+    if text_col is None:
+        best_col = None
+        best_avg_len = 0.0
+        for col in df.columns:
+            try:
+                sample = df[col].dropna().astype(str)
+                avg_len = float(sample.str.len().mean())
+                # Harus berisi teks (rata-rata >= 15 karakter) dan tidak dominan numerik
+                non_numeric = sample.apply(
+                    lambda x: not x.replace('.', '', 1).replace('-', '', 1).isnumeric()
+                )
+                if avg_len > best_avg_len and non_numeric.mean() > 0.8 and avg_len >= 15:
+                    best_avg_len = avg_len
+                    best_col = col
+            except Exception:
+                continue
+        if best_col:
+            text_col = best_col
+
+    # ── Cari kolom rating ────────────────────────────────────────────────────
     for keyword in RATING_COLUMN_KEYWORDS:
         for col_lower, col_original in cols_lower.items():
             if keyword in col_lower:
@@ -136,7 +179,7 @@ def detect_columns(df: pd.DataFrame) -> dict:
                 "❌ **Kolom teks ulasan tidak ditemukan** di file Anda.\n\n"
                 f"Kolom yang tersedia: {col_list}\n\n"
                 "Sistem memerlukan kolom dengan nama yang mengandung salah satu kata kunci berikut:\n"
-                "- **Bahasa Inggris**: `review`, `text`, `comment`, `feedback`, `content`\n"
+                "- **Bahasa Inggris**: `review`, `text`, `comment`, `feedback`, `content`, `description`\n"
                 "- **Bahasa Indonesia**: `ulasan`, `komentar`, `isi`, `pendapat`, `deskripsi`\n\n"
                 "Silakan ubah nama kolom ulasan Anda sesuai salah satu di atas, lalu coba unggah ulang."
             )
@@ -155,31 +198,48 @@ def detect_columns(df: pd.DataFrame) -> dict:
 def clean_data(df: pd.DataFrame, text_col: str, rating_col: str | None = None) -> pd.DataFrame:
     """
     Membersihkan DataFrame: hapus null, duplikat, konversi tipe data.
+
+    Catatan Penting tentang Deduplication:
+    - Menggunakan drop_duplicates() pada SELURUH kolom (bukan hanya teks),
+      sehingga produk berbeda yang kebetulan memiliki deskripsi identik
+      (varian warna/ukuran) tetap dipertahankan dalam dataset.
+    - Hanya baris yang benar-benar 100% identik di semua kolom yang dihapus.
+
     Returns DataFrame yang sudah bersih.
     """
     df = df.copy()
 
-    # Normalisasi nama kolom internal
+    # Normalisasi kolom teks internal
     df["_review_text"] = pd.Series(df[text_col]).astype(str).str.strip()
 
-    # Hapus baris dengan teks kosong atau terlalu pendek (< 3 karakter)
-    df = pd.DataFrame(df[pd.Series(df["_review_text"]).str.len() >= 3])
-    df = pd.DataFrame(df[pd.Series(df["_review_text"]) != "nan"])
+    # Hapus baris dengan teks kosong / placeholder pandas ("nan", "None")
+    mask = (
+        (df["_review_text"].str.len() >= 3) &
+        (df["_review_text"] != "nan") &
+        (df["_review_text"] != "None") &
+        (df["_review_text"] != "NaN")
+    )
+    df = df[mask.values].copy()
 
-    # Hapus duplikat berdasarkan teks ulasan
-    df = df.drop_duplicates(subset=["_review_text"])
+    # Hapus duplikat PENUH (semua kolom identik) — bukan hanya teks
+    df = df.drop_duplicates()
 
     # Proses kolom rating (jika ada)
     if rating_col and rating_col in df.columns:
         df["_rating"] = pd.to_numeric(df[rating_col], errors="coerce")
-        # Hanya rating 1–5 yang valid
-        df["_rating"] = df["_rating"].where(df["_rating"].between(1, 5), other=None)
+        # Terima rentang 0–10, normalisasi ke 1–5 jika nilai maks > 5
+        max_rating_raw = df["_rating"].max()
+        max_rating_val: float = float(max_rating_raw) if pd.notna(max_rating_raw) else 0.0
+        if max_rating_val > 5:
+            df["_rating"] = (df["_rating"] / max_rating_val * 5).round(1)
+        # Batasi ke 0–5 setelah normalisasi
+        df["_rating"] = df["_rating"].where(df["_rating"].between(0, 5), other=None)
     else:
         df["_rating"] = None
 
-    # Reset index
     df = df.reset_index(drop=True)
     return df
+
 
 
 # ─── Fungsi Utama: Proses Upload ─────────────────────────────────────────────
