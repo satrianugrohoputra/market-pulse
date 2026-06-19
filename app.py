@@ -111,16 +111,16 @@ if menu == "📈 Ringkasan Analisis":
     # ==================== BARIS 1: METRIC CARDS ====================
     col_m1, col_m2, col_m3 = st.columns(3)
     with col_m1:
-        st.metric(label="📈 Total Volume Ulasan", value=f"{total_all_reviews:,} Data")
+        st.metric(label="📈 Total Ulasan", value=f"{total_all_reviews:,} Data")
     with col_m2:
         # Menghitung target kepuasan secara dinamis jika ada kolom rating
         if is_user_data and "_rating" in df_aktif_h1.columns:
             avg_rating_user = df_aktif_h1["_rating"].mean()
-            st.metric(label="⭐ Rata-rata Rating Dataset", value=f"{avg_rating_user:.2f} / 5.00")
+            st.metric(label="⭐ Rata-rata Rating", value=f"{avg_rating_user:.2f} / 5.00")
         else:
-            st.metric(label="⭐ Target Kepuasan Produk", value="4.20 / 5.00")
+            st.metric(label="⭐ Rating Rata-Rata", value="4.20 / 5.00")
     with col_m3:
-        st.metric(label="🚀 Sumber Data Utama", value=sumber_data_label)
+        st.metric(label="🚀 Sumber Data", value=sumber_data_label)
 
     st.write("---")
 
@@ -128,7 +128,7 @@ if menu == "📈 Ringkasan Analisis":
     col_pop1, col_pop2 = st.columns([2, 1])
 
     with col_pop1:
-        st.subheader("🔥 Top 10 Produk Populer (Paling Banyak Diminati)")
+        st.subheader("🔥 Top 10 Produk Populer")
         
         if is_user_data:
             df_populer = df_aktif_h1.copy()
@@ -216,7 +216,7 @@ if menu == "📈 Ringkasan Analisis":
             st.info("Belum ada data ulasan produk populer untuk ditampilkan.")
 
     with col_pop2:
-        st.subheader("🎯 Loyalitas per Departemen")
+        st.subheader("🎯 Loyalitas Pelanggan")
         
         if is_user_data:
             df_loyal = df_aktif_h1.copy()
@@ -248,7 +248,7 @@ if menu == "📈 Ringkasan Analisis":
                     if not v_col:
                         v_col = df_loyal.columns[1] if len(df_loyal.columns) > 1 else df_loyal.columns[-1]
 
-                fig_loyal = px.pie(df_chart_loyal, values=v_col, names=n_col, hole=0.4, title="Distribusi Volume Ulasan")
+                fig_loyal = px.pie(df_chart_loyal, values=v_col, names=n_col, hole=0.4, title="Distribusi Loyalitas Pelanggan")
                 fig_loyal.update_layout(
                     margin=dict(l=10, r=10, t=30, b=10),
                     height=350,
@@ -278,7 +278,7 @@ elif menu == "⚠️ Analisis Komplain & Pasar":
     col1, col2 = st.columns(2)
 
     with col1:
-        st.subheader("👥 Karakteristik Pasar Berdasarkan Generasi Usia")
+        st.subheader("👥 Karakteristik Pasar Berdasarkan Kelompok Usia")
         
         if not df_aktif.empty and any(k in "".join(df_aktif.columns).lower() for k in ["age", "usia"]):
             # Skenario jika data default database
@@ -348,7 +348,7 @@ elif menu == "⚠️ Analisis Komplain & Pasar":
 
 # ==================== MENU 3: PENCARIAN ULASAN DINAMIS ====================
 elif menu == "🔍 Pencarian Ulasan Dinamis":
-    st.title("🔍 Mesin Pencari & Penyaring Ulasan Pelanggan")
+    st.title("🔍 Pencari & Penyaring Ulasan Pelanggan")
     st.markdown("Fitur interaktif untuk menyaring curhatan pelanggan berdasarkan kata kunci dan rating secara dinamis.")
     st.write("---")
 
@@ -425,7 +425,7 @@ elif menu == "🔍 Pencarian Ulasan Dinamis":
     st.write("---")
 
     # ── BAGIAN SUB-TABEL BAWAH: EFEKTIVITAS ULASAN (HANYA UNTUK DATASET DEFAULT/SINKRON) ──
-    st.subheader("💡 Efektivitas Ulasan Ekstrem Berdasarkan Kategori")
+    st.subheader("💡Upvote Tiap Rating")
     
     if is_user_data:
         # Jika dataset luar, hitung statistik sederhana dari data user agar halaman bawah tidak kosong hantu
