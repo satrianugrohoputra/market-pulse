@@ -5,6 +5,9 @@ import re
 import os
 import pickle
 from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
+import folium
+from streamlit_folium import st_folium
+
 
 # Import modul lokal kelompok dari folder 'modules'
 from modules import database as db
@@ -1102,3 +1105,23 @@ elif menu == "🔮 Simulator & Evaluator AI":
                     
                 st.markdown("### 📋 Laporan AI Business Insight")
                 st.markdown(report)
+
+    st.write("---")
+    st.subheader("📍 Our Location Information")
+    st.markdown("Berikut adalah peta interaktif lokasi kampus pengembang **Market-Pulse**:")
+    
+    lat_surabaya = -7.315266629041007
+    lon_surabaya = 112.72671298703463
+    peta_ketintang = folium.Map(
+        location=[lat_surabaya, lon_surabaya], 
+        zoom_start=16
+    )
+
+    folium.Marker(
+        [lat_surabaya, lon_surabaya],
+        popup="Jl. Ketintang Wiyata, Gayungan, Surabaya",
+        tooltip="Klik untuk melihat alamat",
+        icon=folium.Icon(color="red", icon="info-sign")
+    ).add_to(peta_ketintang)
+
+    st_folium(peta_ketintang, height=450, use_container_width=True, returned_objects=[])
